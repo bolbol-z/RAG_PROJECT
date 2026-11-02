@@ -1,0 +1,1298 @@
+BILOU CAMERA — FINAL ENGINEERING ARCHITECTURE v2
+
+Photo-first native film simulation engine Version: 2.0 Date: 31 October
+2026 Status: Recommended implementation baseline Platform: iOS / iPhone
+Stack: Swift, SwiftUI, AVFoundation, ImageIO, Core Image, Metal
+
+PURPOSE AND SOURCE BASIS
+
+This is an engineering specification consolidating: 1. The original
+biloU_Camera.txt engineering blueprint. 2.
+BilouCamera_Photo_Architecture_Report.txt, the second engineer’s report.
+3. The technical review decisions: accept, modify, or replace.
+
+It specifies source acquisition from Git, licence audit, module
+boundaries, profile creation, registry, recipe resolution, colour
+management, rendering, testing, and implementation order.
+
+Evidence labels: [INSPECTED] Facts reported by the second engineer from
+repository snapshots. [DECISION] Recommended architecture in this
+document. [VERIFY] Must be rechecked against the current upstream source
+or target device. [LEGAL] Requires licence/rights-holder review; this is
+not legal advice.
+
+The product is an independent film-look renderer. It does not contain or
+claim to reproduce Fujifilm’s proprietary internal algorithms. Use
+wording such as: “Independent film-look approximation inspired by
+popular Fujifilm-style simulations and recipes; not an official or
+identical Fujifilm rendering.”
+
+Never claim exactness, authenticity, official status, or a percentage of
+Fujifilm accuracy without a lawful, controlled validation programme.
+
+=============================================================================== 1.
+EXECUTIVE ARCHITECTURE DECISION
+===============================================================================
+
+Build a native hybrid engine: - Swift: domain models, registry, recipe
+resolution, capture coordination, persistence, export orchestration,
+application logic. - SwiftUI: presentation only. - AVFoundation: camera
+sessions and capture. - ImageIO/CoreGraphics: decode, orientation,
+metadata, colour-profile access. - Core Image: suitable graph-based
+image operations. - Metal: custom high-performance colour and spatial
+kernels. - CPU reference implementation: mathematical baseline for
+tests. - 3D LUT or parametric transform: base per-pixel colour look. -
+Dedicated spatial operations: grain, clarity/local contrast, sharpening,
+noise reduction, halation, bloom, vignette. - PhotoRenderer first.
+VideoRenderer later and separately.
+
+The most important separation:
+
+FilmSimulationRegistry | +—- bilou.chrome.v1 | +—- bilou.negative.v1
+
+RecipeRegistry is a separate registry. It contains eight recipe
+definitions. A recipe points to one base profile; it is not itself a new
+base simulation.
+
+Five recipes use bilou.chrome.v1: - ALPINE GOLD - DAILY AESTHETIC -
+VIBRANT ARIZONA - SOLIS - VINTAGE POSTCARDS
+
+Three recipes use bilou.negative.v1: - EDDY’S POINT & SHOOT - CLASSIC
+CUBAN NEG - CLASSIC SUNGLASSES VIEW
+
+Correct implementation order: 1. Audit Git sources, assets, commit
+hashes, licences. 2. Define colour-space and image-domain contracts. 3.
+Build LUT parser, CPU sampler, Metal sampler, tests. 4. Build
+bilou.chrome.v1 independently. 5. Build bilou.negative.v1 independently.
+6. Register both profiles. 7. Build typed Recipe Engine and resolver. 8.
+Add eight recipes as data. 9. Implement recipe effect modules. 10.
+Integrate photo capture/import and export. 11. Optimize after profiling
+real devices. 12. Add video only after photo foundations stabilize.
+
+===============================================================================
+2. ENGINEERING REVIEW: ACCEPT / MODIFY / REPLACE
+===============================================================================
+
+2.1 ACCEPT — retain these decisions
+
+A. Hybrid Swift / AVFoundation / Core Image / Metal. This is the right
+native foundation for camera capture, metadata, image processing, GPU
+execution, and a maintainable iOS application.
+
+B. Independent Classic Chrome and Classic Negative. Each profile needs a
+stable ID, independent parameters, independent manifest, independent
+implementation and independent tests. They must be independently
+selectable without a recipe.
+
+C. Separate source recipe settings from Bilou parameters. Published
+Fujifilm-style settings are source facts. Bilou’s internal values are
+approximate implementation controls. Never store both in one ambiguous
+field.
+
+D. Provenance and licence metadata. Every imported code component, LUT,
+data file, and external asset needs source, commit/version, licence,
+checksum where relevant, and redistribution status.
+
+E. Unknown settings remain null. Never invent ISO, exposure, sharpness,
+clarity, or other missing values. “Not provided” is different from a
+published zero.
+
+F. LUT and spatial effects are separate. A 3D LUT maps colour values. It
+does not implement grain statistics, resolution-aware grain, local
+contrast, sharpening, denoising, optical halation, bloom, vignette, or
+temporal video effects.
+
+G. CPU reference plus GPU implementation. This gives the team a
+deterministic reference for Metal validation.
+
+H. Photo first, video later. Video adds frame timing, temporal effects,
+bounded queues, audio sync, thermal constraints, and encoder metadata.
+It must not delay a stable photo pipeline.
+
+2.2 MODIFY — preserve the idea but correct its implementation
+
+A. Colour-space naming. The second report proposes Display P3 primaries
+with an sRGB transfer curve. That can describe a custom encoding, but
+must not casually be named the standard Display P3 colour space. Define
+primaries, white point, transfer function, range, and scene/display
+reference domain separately. Prefer an explicit extended-linear Display
+P3 working space internally, after testing.
+
+B. Noise reduction stage. NR must be source-dependent. RAW development,
+Apple ProRAW, processed HEIC/JPEG and video have different noise/detail
+characteristics. Some denoising may belong in source development; recipe
+NR is a separate optional effect.
+
+C. White-balance mapping. Fuji WB presets and R/B shifts are not literal
+RGB multipliers. RAW requires source-aware WB handling. Processed images
+permit only a relative approximation. Version and label the mapping as
+estimated.
+
+D. Recipe value status schema. Make serialized values stable and
+consistent. Recommended values: published, verified, inferred,
+not_provided, unsupported, disputed. Swift enum case names may use camel
+case, but JSON raw values must be fixed.
+
+E. CPU/GPU tolerance. Do not demand arbitrary 1e-6 equality between CPU
+Double and GPU Float/Half. Measure real devices and set separate
+tolerances. Track maximum, mean, percentile, and perceptual error.
+
+F. LUT interpolation. Start with trilinear. Add tetrahedral if there is
+a demonstrated quality or compatibility reason. Test both. No
+interpolation method should be assumed correct for every imported LUT.
+
+G. Profile distinctness. Chrome and Negative being different does not
+prove either is accurate. Test technical integrity, neutral ramps,
+profile identity, no fallback, qualitative behaviour, and reference
+closeness only when the reference is lawful and its provenance is known.
+
+2.3 REPLACE — do not carry these designs into production
+
+A. Generic DR400 / DR-P curve. A formula such as roll = n * 0.022 cannot
+represent camera capture-side dynamic-range behaviour. DR modes interact
+with exposure strategy and highlight headroom; DR-P Strong is not a
+stronger DR400 slider. Replacement: - preserve the published DR label in
+SourceRecipeSettings; - keep capture guidance separate; - if needed,
+implement a Bilou-named optional Highlight Protection effect; - label it
+estimated and version it; - never claim it reproduces DR400 or DR-P.
+
+B. Hard hue thresholds for Color Chrome and FX Blue. Hard hue bands
+create discontinuities, visible transitions, and potential banding. They
+may be used in a throwaway prototype only. Replacement: - separate
+ColorChromeEffect and BlueResponseEffect; - use smooth
+hue/chroma/lightness masks; - define transition width and colour
+space; - test gradients and gamut behaviour; - tune using Bilou-owned or
+licensed images.
+
+C. RGB/HSV as final perceptual model. RGB is appropriate for interchange
+and GPU textures. HSV is convenient but not perceptually uniform. Keep
+it for simple MVP controls only. For selective colour work, evaluate
+OKLab/OKLCH or another perceptually motivated space, including correct
+gamut handling and conversion tests.
+
+D. LUT as the whole film simulation. Replacement architecture: source
+normalization -> base colour transform -> recipe tone/colour controls ->
+spatial effect graph -> output gamut mapping -> encoding. The base
+profile is one node in a render graph, not the complete renderer.
+
+E. Community LUT fit as Fujifilm parity. Matching a community LUT proves
+agreement with that LUT, not Fujifilm camera output. Do not call such a
+score “Fujifilm accuracy”. Do not ship coefficients fitted from an
+unclear-licence LUT. A future lawful validation set must record camera
+model, firmware, lighting, exposure, chart, output profile, and
+pipeline.
+
+===============================================================================
+3. GIT ACQUISITION, REPOSITORY AUDIT, AND LICENSING
+===============================================================================
+
+3.1 Create an isolated research workspace
+
+mkdir -p
+~/Developer/BilouCameraResearch/{repositories,reports,quarantine,approved,checksums}
+cd ~/Developer/BilouCameraResearch
+
+Never put an unreviewed LUT into the app’s production Resources folder.
+
+3.2 Clone candidate repositories
+
+git clone –depth 1 https://github.com/MatthewGreenberg/fujilab.git
+repositories/fujilab
+
+git clone –depth 1 https://github.com/sadziu/Fuji-Recipe-Converter.git
+repositories/Fuji-Recipe-Converter
+
+git clone –depth 1 https://github.com/thecuvii/fuji-recipes.git
+repositories/fuji-recipes
+
+git clone –depth 1 https://github.com/storytold/lightcraft.git
+repositories/lightcraft
+
+If already cloned, do not overwrite local work. Inspect first: git
+status –short git remote -v git fetch –all –tags git rev-parse HEAD git
+log -1 –format=fuller
+
+3.3 Record immutable source identities
+
+The second engineer reported these inspected commits: - Fujilab:
+cd295b04768eb363f83786578e0baa33c7c9903e - Fuji Recipe Converter:
+a6691ea0e880ddd5fd19d7ca2d48a502fb0e7e07 - fuji-recipes:
+d46d60ee188d443f1efcce0c0022bf64f6f4243d
+
+These hashes identify the inspected snapshots, not necessarily the
+current remote HEAD. Recheck them before using source material.
+
+For every repository: git rev-parse HEAD git remote -v git status –short
+git log -1 –format=fuller git ls-files
+
+3.4 Inspect code, assets, and licence files
+
+find . -maxdepth 3 -type f | sort find . -iname ‘license’ -o -iname
+’copying’ -o -iname ’notice*’ cat README.md cat package.json 2>/dev/null
+rg -n -i ‘classic.chrome|classic.negative|lut|cube|3dl|film.simulation’
+.
+
+Record exact paths and distinguish code from binary assets. Hash every
+candidate: shasum -a 256 path/to/file.cube shasum -a 256
+path/to/file.3dl
+
+3.5 Repository findings from engineer 2’s inspected snapshots
+
+FUJILAB [INSPECTED] - React + Vite + WebGL2 / GLSL. - Main files
+reported: src/gpu/renderer.js, src/lut.js, src/recipes.js,
+src/recipeParser.js. - No root LICENSE and no package.json licence field
+were found. - README described .3dl files as derived from a Fuji XTrans
+III LUT pack. - 15 .3dl files were found, although README wording
+referred to 12 looks. - A Classic Chrome .3dl existed. - No Classic
+Negative LUT existed in the inspected set. - The parser fell back from
+Classic Negative to Classic Chrome with a warning. Decision: Study
+rendering architecture only. Do not copy its code or ship its LUTs
+unless the actual rights holder and redistribution terms are established
+in writing.
+
+FUJI RECIPE CONVERTER [INSPECTED] - MIT licence was reported in the
+inspected snapshot. - Relevant files: js/data.js and js/engine.js; also
+export/parser/tests. - It contains separate Classic Chrome and Classic
+Negative model definitions. - It derives a look from recipe settings and
+can bake 17/33/65 LUTs. - Its README states that estimates are
+hand-tuned and not measured against camera JPEG outputs. - Third-party
+vendor components were reported: Lucide (ISC), Tesseract.js
+(Apache-2.0), heic-to (LGPL-3.0). Decision: Study/reimplement the model
+in Swift. If copying any MIT code, retain required copyright and licence
+notices. Do not copy vendor/ or LGPL components as an accidental side
+effect. Recheck exact licences at the pinned commit.
+
+FUJI-RECIPES PARSER [INSPECTED] - MIT TypeScript MakerNotes/EXIF
+parser. - Reads settings already embedded in Fujifilm image metadata.
+Decision: Optional future feature for importing settings from Fujifilm
+photos. It does not render Chrome or Negative and does not contain a
+Film Simulation LUT.
+
+UPSTREAM FUJI XTRANS III LUT PACK [INSPECTED] - Fujilab references an
+upstream community LUT pack. - The second engineer did not establish a
+clear redistribution licence. Decision: Quarantine. Do not ship or
+numerically fit production parameters to it without permission and legal
+review. Use clean-room Bilou tuning and clearly licensed models instead.
+
+3.6 Audit artefacts to create
+
+Research/repository-audit.md Research/THIRD_PARTY_NOTICES.md
+Research/ASSET_PROVENANCE.md Research/source-checksums.txt
+
+Each record must include repository URL, commit, inspection date, file
+path, licence, author/copyright, usage decision, redistribution status,
+checksum, input/output colour assumptions, and whether the material is
+copied, reimplemented, or merely studied.
+
+3.7 Clean-room process
+
+1.  Document public behaviour and relevant algorithmic concepts.
+2.  Implement independently from the written specification.
+3.  Do not paste unlicensed source code into Bilou.
+4.  Preserve links, commits, licence records, and design notes.
+5.  Review source similarity if substantial implementation derives from
+    a third-party codebase.
+6.  Obtain legal review where rights remain uncertain.
+
+Cloning a repository does not grant redistribution rights. An MIT code
+licence does not automatically license every third-party asset bundled
+in that repo.
+
+===============================================================================
+4. FINAL SYSTEM ARCHITECTURE
+===============================================================================
+
+4.1 System diagram
+
+                         BILOU CAMERA
+                              |
+                  +-----------+-----------+
+                  |                       |
+               SwiftUI              Application Layer
+                  |              CaptureCoordinator
+        Camera / Recipe / Editor  RenderCoordinator
+        Preview / Export UI      RecipeResolver
+                                 ExportCoordinator
+                                 EditSessionManager
+                                         |
+             +---------------------------+----------------------+
+             |                           |                      |
+        Photo Capture               Photo Import            Persistence
+        AVFoundation                ImageIO/CoreGraphics     Original Assets
+             |                           |                    Sidecars
+             +-------------+-------------+                    Recipe JSON
+                           |
+                 INPUT NORMALIZATION
+           metadata / decode / orientation / crop
+            source colour identification / source router
+                           |
+                 SOURCE-SPECIFIC DEVELOPMENT
+             HEIC/JPEG | Bayer RAW/DNG | Apple ProRAW
+                           |
+                  COLOR SCIENCE FOUNDATION
+       transfer functions / primaries / working space / WB /
+             exposure / gamut policy / tone mapping
+                           |
+                 FILM SIMULATION REGISTRY
+                           |
+                 +---------+---------+
+                 |                   |
+          bilou.chrome.v1     bilou.negative.v1
+                 |                   |
+                 +---------+---------+
+                           |
+                    RECIPE RESOLVER
+             base profile + source settings +
+               native parameters + overrides
+                           |
+                     LOOK COMPILER
+              parametric transform / LUT bake
+                           |
+                    PHOTO RENDER GRAPH
+       tone / colour / selective colour / spatial effects
+                           |
+                    OUTPUT PIPELINE
+        gamut mapping / transfer / encoding / metadata
+                           |
+                     EXPORT + STORAGE
+
+Video later uses its own capture and frame-rendering branch. It may
+reuse colour contracts and selected kernels, but not the photo capture
+controller.
+
+4.2 Layer responsibilities
+
+Presentation: UI only; no colour science. Application: coordinates use
+cases and state. Capture: AVFoundation session, capability detection,
+capture metadata. Media: decode, orientation, metadata, source-specific
+development. ColorScience: colour spaces, transfer functions,
+WB/exposure, gamut/tone. FilmSimulation: profile protocol, registry,
+manifests, LUT infrastructure. Recipe: source settings, native
+parameters, provenance, validation, resolver. Render: ordered graph and
+Core Image/Metal/CPU backends. Output: output profile, gamut mapping,
+encoding, metadata. Persistence: originals, edit sessions, sidecars,
+versions.
+
+===============================================================================
+5. SWIFT MODULE AND DIRECTORY STRUCTURE
+===============================================================================
+
+Recommended initial structure:
+
+BilouCamera/ App/ BilouCameraApp.swift AppEnvironment.swift
+DependencyContainer.swift
+
+Packages/ BilouColorScience/ ColorSpaceDescriptor.swift
+TransferFunction.swift ColorPrimaries.swift Matrix3x3.swift
+ColorConversion.swift WorkingColorSpace.swift GamutMapping.swift
+ToneMapping.swift ExposureMath.swift WhiteBalanceMath.swift
+
+    BilouFilmSimulation/
+      FilmSimulationProfile.swift
+      FilmSimulationRegistry.swift
+      FilmSimulationValidator.swift
+      FilmSimulationEngine.swift
+      LUT/
+        LUT3D.swift
+        LUTParser.swift
+        LUTSampler.swift
+        LUTInterpolation.swift
+        LUTDomain.swift
+      Profiles/
+        ClassicChrome/
+          ClassicChromeProfile.swift
+          ClassicChromeParameters.json
+          ClassicChromeManifest.json
+          ClassicChrome.cube (only if licensed)
+        ClassicNegative/
+          ClassicNegativeProfile.swift
+          ClassicNegativeParameters.json
+          ClassicNegativeManifest.json
+          ClassicNegative.cube (only if licensed)
+
+    BilouRecipe/
+      Recipe.swift
+      PublishedSetting.swift
+      SourceRecipeSettings.swift
+      NativeRecipeParameters.swift
+      CaptureGuidance.swift
+      RecipeProvenance.swift
+      RecipeValidator.swift
+      RecipeResolver.swift
+      RecipeRegistry.swift
+      Recipes/
+        AlpineGold.json
+        DailyAesthetic.json
+        VibrantArizona.json
+        Solis.json
+        VintagePostcards.json
+        EddysPointAndShoot.json
+        ClassicCubanNeg.json
+        ClassicSunglassesView.json
+
+    BilouRender/
+      RenderCoordinator.swift
+      RenderRequest.swift
+      RenderContext.swift
+      RenderResult.swift
+      RenderQuality.swift
+      RenderGraph.swift
+      PhotoRenderer.swift
+      PreviewRenderer.swift
+      ExportRenderer.swift
+      Effects/
+        ExposureEffect.swift
+        WhiteBalanceEffect.swift
+        HighlightEffect.swift
+        ShadowEffect.swift
+        ColorEffect.swift
+        ColorChromeEffect.swift
+        BlueResponseEffect.swift
+        GrainEffect.swift
+        ClarityEffect.swift
+        SharpeningEffect.swift
+        NoiseReductionEffect.swift
+        HalationEffect.swift
+        BloomEffect.swift
+        VignetteEffect.swift
+
+    BilouCapture/
+      CameraSessionController.swift
+      PhotoCaptureController.swift
+      CameraCapabilityService.swift
+      CaptureSettings.swift
+
+    BilouMedia/
+      ImageDecoder.swift
+      RAWDevelopmentService.swift
+      ProRAWDecoder.swift
+      ImageMetadataReader.swift
+      OrientationNormalizer.swift
+
+    BilouPersistence/
+      AssetStore.swift
+      RecipeStore.swift
+      EditSessionStore.swift
+      SidecarWriter.swift
+      ExportMetadataWriter.swift
+
+Metal/ InputTransform.metal WhiteBalance.metal FilmSimulationLUT.metal
+ToneCurve.metal ColorChrome.metal BlueResponse.metal Grain.metal
+Clarity.metal Sharpening.metal Halation.metal OutputTransform.metal
+
+Tests/ ColorScienceTests/ LUTParserTests/ LUTSamplerTests/
+FilmSimulationTests/ RecipeSchemaTests/ RecipeResolverTests/
+PhotoPipelineTests/ GoldenImageTests/ MetalParityTests/
+PerformanceTests/
+
+Do not create a separate Swift package for every effect at the
+beginning. Start with meaningful boundaries. Split further only when
+separate ownership, testing, or dependency isolation justifies it.
+
+Dependency direction: - Render may depend on ColorScience,
+FilmSimulation, and Recipe contracts. - Recipe may depend on profile
+IDs/contracts. - Capture may depend on AVFoundation and domain capture
+models. - Media may depend on ImageIO/CoreGraphics. - ColorScience must
+not depend on SwiftUI. - FilmSimulation must not import camera screen
+views. - Recipe must not depend on Metal shader implementation. - UI
+must not parse LUT files directly.
+
+===============================================================================
+6. FILM SIMULATION PROFILE CONTRACT AND REGISTRY
+===============================================================================
+
+6.1 What a profile means
+
+A profile is a reusable, versioned base colour transform with declared
+input and output contracts, provenance, limitations, and implementation.
+
+It is not a recipe, grain setting, camera controller, editor session, or
+claim to reproduce Fujifilm’s internal implementation.
+
+6.2 Profile protocol (illustrative Swift)
+
+public protocol FilmSimulationProfile: Sendable { var id:
+FilmSimulationID { get } var displayName: String { get } var version:
+Int { get } var manifest: FilmSimulationManifest { get } var
+capabilities: FilmSimulationCapabilities { get }
+
+    func makeColorTransform(
+        context: FilmSimulationRenderContext
+    ) throws -> FilmColorTransform
+
+}
+
+Keep GPU command queues and texture ownership in the render backend, not
+in the profile object. The profile describes the transform; the renderer
+executes it.
+
+6.3 Strongly typed IDs
+
+public struct FilmSimulationID: RawRepresentable, Codable, Hashable,
+Sendable { public let rawValue: String public init(rawValue: String) {
+self.rawValue = rawValue } }
+
+public extension FilmSimulationID { static let chrome =
+FilmSimulationID(rawValue: “bilou.chrome.v1”) static let negative =
+FilmSimulationID(rawValue: “bilou.negative.v1”) }
+
+Stable IDs are not display names. A material change to profile
+mathematics should be versioned and documented.
+
+6.4 Registry (illustrative)
+
+public struct FilmSimulationRegistry { private var profiles:
+[FilmSimulationID: any FilmSimulationProfile] = [:]
+
+    public mutating func register(
+        _ profile: any FilmSimulationProfile
+    ) throws {
+        guard profiles[profile.id] == nil else {
+            throw RegistryError.duplicateProfile(profile.id)
+        }
+        try FilmSimulationValidator.validate(profile)
+        profiles[profile.id] = profile
+    }
+
+    public func profile(
+        for id: FilmSimulationID
+    ) throws -> any FilmSimulationProfile {
+        guard let profile = profiles[id] else {
+            throw RegistryError.unknownProfile(id)
+        }
+        return profile
+    }
+
+}
+
+Composition root:
+
+var registry = FilmSimulationRegistry() try
+registry.register(ClassicChromeProfile()) try
+registry.register(ClassicNegativeProfile())
+
+let recipes = try RecipeRegistry.loadBundledRecipes() let resolver =
+RecipeResolver( filmSimulations: registry, recipes: recipes )
+
+Build the registry once in the dependency container; do not rebuild it
+on every camera preview frame.
+
+6.5 Registry rules and tests
+
+-   Duplicate IDs throw.
+-   Unknown IDs throw.
+-   No default/fallback to Chrome.
+-   Negative must never resolve to Chrome.
+-   Manifests are validated during registration.
+-   Registry order is deterministic.
+-   Profile versions are persisted with rendered assets.
+-   Both profiles can be selected without a recipe.
+
+===============================================================================
+7. HOW TO BUILD bilou.chrome.v1
+===============================================================================
+
+7.1 Goal and source
+
+Build an independent Classic Chrome-inspired Bilou profile. First source
+to study: https://github.com/sadziu/Fuji-Recipe-Converter
+
+The second engineer inspected its js/data.js and js/engine.js and
+reported a distinct Classic Chrome model. The repository author states
+the emulation is estimated and not measured against Fujifilm camera
+JPEGs. Verify the pinned commit and MIT licence before reuse.
+
+Fujilab has a Classic Chrome .3dl in the inspected snapshot, but the
+repository and upstream LUT redistribution rights were not established.
+Study only unless written permission or a clear licence is confirmed.
+
+7.2 Recommended implementation
+
+Use a Bilou-owned parametric transform, informed by permitted documented
+concepts, with: - CPU reference implementation, - Metal
+implementation, - optional baked 3D LUT, - independent manifest, -
+tuning log, - known limitations.
+
+Possible model components: - baseline tone response, - global saturation
+response, - shadow lift/colour, - highlight response, - smooth
+hue/chroma band adjustments, - restrained colour grading, - explicit
+gamut handling.
+
+Do not put ALPINE GOLD white balance, SOLIS grain, or other recipe
+controls inside the base profile.
+
+7.3 Manifest example
+
+{ “profileId”: “bilou.chrome.v1”, “displayName”: “Chrome (Bilou)”,
+“version”: 1, “implementation”: “parametric”, “provenanceClass”:
+“community-model-informed+bilou-native-tuning”, “confidence”:
+“estimated”, “workingSpace”: “extended-linear-display-p3”, “source”: [{
+“name”: “Fuji Recipe Converter”, “url”:
+“https://github.com/sadziu/Fuji-Recipe-Converter”, “commit”:
+“a6691ea0e880ddd5fd19d7ca2d48a502fb0e7e07”, “licence”: “MIT”, “usage”:
+“model study / clean reimplementation” }], “limitations”: [ “Independent
+approximation; not official or identical”, “Not measured against
+controlled camera JPEG outputs”, “Spatial effects are outside the base
+colour transform” ], “tuningLog”: [] }
+
+Recheck the licence and commit; this example is not a substitute for
+audit.
+
+7.4 Implementation sequence
+
+CH-01 Define profile type, ID, manifest and parameter schema. CH-02
+Define accepted input domain and colour contract. CH-03 Implement CPU
+reference mathematics. CH-04 Test neutral input, endpoints, ramps and
+finite output. CH-05 Implement equivalent Metal transform. CH-06 Compare
+CPU and GPU on deterministic test vectors. CH-07 Add optional LUT baking
+and cache. CH-08 Tune using Bilou-owned or licensed images. CH-09 Record
+every parameter change in tuningLog. CH-10 Register profile. CH-11
+Verify independent selection without a recipe. CH-12 Set confidence to
+estimated until proper validation exists.
+
+Acceptance: - no NaN/Inf; - no unexplained neutral cast; - smooth
+ramps; - explicit domain and out-of-domain behaviour; - CPU/Metal error
+within measured tolerance; - no unlicensed LUT shipped; - preview and
+final render use same transform semantics.
+
+===============================================================================
+8. HOW TO BUILD bilou.negative.v1
+===============================================================================
+
+8.1 Goal
+
+Build an independent Classic Negative-inspired Bilou profile. It must
+not be Classic Chrome plus arbitrary saturation/contrast changes.
+
+8.2 Source
+
+Study the distinct Classic Negative model reported in Fuji Recipe
+Converter: https://github.com/sadziu/Fuji-Recipe-Converter
+
+The inspected Fujilab parser falls back from Classic Negative to Classic
+Chrome and warns about it. That fallback is explicitly forbidden in
+Bilou.
+
+8.3 Implementation sequence
+
+CN-01 Create ClassicNegativeProfile.swift and bilou.negative.v1 ID.
+CN-02 Create independent parameter schema and manifest. CN-03 Study
+permitted Classic Negative model concepts. CN-04 Implement its own CPU
+reference transform. CN-05 Implement Metal version or pass independent
+parameters to a shared, generic kernel. CN-06 Bake a separate LUT if LUT
+baking is used. CN-07 Add independent tests and golden-image fixtures.
+CN-08 Register in FilmSimulationRegistry. CN-09 Prove the registry never
+aliases or falls back to Chrome. CN-10 Record provenance, confidence and
+limitations.
+
+Sharing a generic evaluator is acceptable. Sharing the same profile
+instance with arbitrary offsets is not.
+
+Acceptance: - separate ID, parameters, manifest and version; -
+independently selectable; - no Chrome fallback; - passes technical tests
+independently; - profile distinctness is tested but not described as
+accuracy proof.
+
+===============================================================================
+9. COLOUR SCIENCE AND INPUT CONTRACT
+===============================================================================
+
+9.1 Why it matters
+
+An RGB triplet does not fully identify a colour. Interpretation depends
+on primaries, white point, transfer function, range, and reference
+domain. A LUT designed for sRGB/Rec.709 cannot be applied blindly to
+Display P3, linear RGB, Apple Log, or HDR data.
+
+9.2 Every image/LUT descriptor must define
+
+-   primaries;
+-   white point;
+-   transfer function;
+-   numeric range;
+-   scene-referred or display-referred domain;
+-   alpha convention if relevant;
+-   bit depth/precision;
+-   HDR metadata or gain-map state if applicable.
+
+Do not use a vague “RGB” label.
+
+9.3 Working-space decision
+
+For the initial photo pipeline: 1. Decode using embedded metadata. 2.
+Convert to a known working space. 3. Use an extended-range linear space
+for operations requiring light-domain calculations. 4. Keep
+display-referred transforms explicit. 5. Convert to output colour space
+only in the output pipeline.
+
+Extended-linear Display P3 is a candidate, subject to real device
+testing and correct Core Image/Metal configuration. Do not mislabel a
+custom combination of P3 primaries and sRGB transfer as standard Display
+P3.
+
+9.4 Transfer functions and Log
+
+Implement/test sRGB encode/decode and linear light. Handle Rec.709 only
+where needed. Apple Log input transform belongs to a later video stage
+and must use the correct transform. Apple Log is not Rec.709. ProRes is
+a codec family, not a colour space. HEIC does not imply one fixed colour
+space.
+
+9.5 Exposure and WB
+
+Exposure and highlight compression are separate controls. RAW white
+balance should be handled during source-aware development when possible.
+Processed HEIC/JPEG allows only a relative approximation. Published WB
+preset and R/B shift must remain separate from Bilou’s native
+adaptation/gain parameters.
+
+9.6 HDR / gain-map policy
+
+For v1, either support HDR with an explicit transform or explicitly
+tone-map to SDR before applying an SDR look. Preserve the original. Do
+not silently discard HDR/gain-map information and call the result
+equivalent.
+
+9.7 LUT domain/extrapolation
+
+Every LUT declares dimension, domain min/max, input/output space,
+transfer, interpolation and out-of-domain policy. Core Image cube
+extrapolation and Metal sampler clamping must not diverge silently. If
+one path extrapolates and another clamps, highlights can differ. Define
+and test one policy.
+
+===============================================================================
+10. LUT ENGINE: PARSING, SAMPLING, BAKING
+===============================================================================
+
+10.1 Formats
+
+Initial target: .cube. Add only the specific .3dl variant that is
+required and has real fixtures. Do not claim general .3dl support until
+shaper/domain variants are handled.
+
+10.2 Parser
+
+LUTParser must: - parse title/comments when applicable; - parse
+LUT_3D_SIZE; - parse DOMAIN_MIN and DOMAIN_MAX; - parse numeric
+entries; - validate exactly N^3 entries; - reject malformed/truncated
+files; - reject NaN and infinity; - preserve original file hash; -
+return a typed LUT object; - never silently invent a missing domain.
+
+10.3 Data model (illustrative)
+
+struct LUT3D: Sendable { let dimension: Int let domainMin: SIMD3 let
+domainMax: SIMD3 let entries: [SIMD3] let interpolation:
+LUTInterpolation let sourceDescriptor: ColorSpaceDescriptor }
+
+10.4 Interpolation
+
+Trilinear is the baseline. Tetrahedral is optional after quality
+evaluation. Test corners, edges, centre, random samples, neutral ramps,
+saturated ramps, and out-of-domain values.
+
+10.5 LUT size
+
+17^3: prototype / smaller. 33^3: balanced starting point. 65^3: higher
+grid resolution but more storage and bake cost.
+
+Do not assume 65^3 is automatically superior. Benchmark image quality,
+memory, bake time and sampling cost.
+
+10.6 GPU and memory
+
+A high-resolution RGBA half-float image can require hundreds of MB for
+one buffer. Multiple full-resolution intermediates multiply that
+pressure. Use texture pooling, bounded in-flight work, tiling where
+required, lazy graph evaluation, cancellation, memory-pressure handling,
+and preview/capture/export quality tiers. Cache Metal pipelines and LUT
+textures; do not upload LUTs every frame.
+
+Cache key should include profile ID/version, parameter hash, LUT
+dimension, working-space descriptor, precision, interpolation and shader
+version.
+
+===============================================================================
+11. RECIPE ENGINE DATA MODEL
+===============================================================================
+
+11.1 Keep three domains separate
+
+SourceRecipeSettings: Published values from the recipe author. Preserve
+raw text and source.
+
+NativeRecipeParameters: Bilou’s own implementation values. They are
+estimates/tuning parameters, not Fujifilm camera values.
+
+CaptureGuidance: ISO/exposure/lighting/filter recommendations. Guidance
+is not automatically converted into fixed rendering coefficients.
+
+11.2 Status schema
+
+Recommended serialized values: published verified inferred not_provided
+unsupported disputed
+
+A Published stores: - raw source text; - normalized typed value if
+safely convertible; - status; - source URL/reference; - notes.
+
+11.3 Illustrative model
+
+struct Published<Value: Codable & Hashable & Sendable>: Codable,
+Hashable, Sendable { let raw: String let value: Value? let status:
+PublishedValueStatus }
+
+struct Recipe: Codable, Identifiable, Sendable { let id: String let
+version: Int let name: String let author: String? let
+baseFilmSimulation: FilmSimulationID let sourceSettings:
+SourceRecipeSettings let nativeParameters: NativeRecipeParameters let
+captureGuidance: CaptureGuidance let provenance: RecipeProvenance }
+
+Bad design: clarity = -3, and renderer assumes it is a literal optical
+diffusion amount.
+
+Good design: sourceSettings.clarity = published(-3)
+nativeParameters.localContrast = estimated(value)
+nativeParameters.diffusion = nil
+
+12.4 Resolver
+
+Input: recipe ID/version, user overrides, source type/colour metadata,
+render quality and output target.
+
+Output: base profile, validated native parameters, ordered effect graph,
+warnings for missing/unsupported values, provenance and deterministic
+render configuration.
+
+A neutral render state may be used where a setting is absent, but the UI
+must distinguish not-provided from published zero and unsupported.
+
+12.5 Overrides
+
+Source settings are immutable. User edits live in userOverrides. Support
+reset-to-source, reset-to-Bilou-default, and reset-all. Do not overwrite
+the recipe author’s original settings.
+
+===============================================================================
+12. THE EIGHT RECIPE DEFINITIONS
+===============================================================================
+
+Only use values documented in the source material. Unknown remains null.
+
+ALPINE GOLD Base: bilou.chrome.v1 Source: Gomesphoto.jpg - Classic
+Chrome; DR400; Grain Off - Color Chrome Strong; FX Blue Weak - WB Auto
+R+5/B-6 - Highlight -2; Shadow -2; Color +3 - Sharpness +1; NR -2;
+Clarity 0 - ISO unknown; Exposure unknown
+
+DAILY AESTHETIC Base: bilou.chrome.v1 - Classic Chrome; DR400; Grain
+Off - Color Chrome Weak; FX Blue Off - WB Shade R0/B-1 - Highlight -2;
+Shadow -2; Color -2 - Sharpness -2; NR -4; Clarity -1 - Exposure
+guidance -1 to +2/3 - ISO start 640, up to 1600
+
+VIBRANT ARIZONA Base: bilou.chrome.v1; author Ritchie Roesch - Classic
+Chrome; Grain Weak/Small - Color Chrome Off; FX Blue Weak - WB 4350K
+R+6/B-8 - DR-P Strong; Color +4 - Sharpness -2; NR -4; Clarity -3 - ISO
+Auto up to 6400 - Exposure guidance typically +2/3 to +1 1/3 - Highlight
+unknown; Shadow unknown
+
+SOLIS Base: bilou.chrome.v1 - Classic Chrome; Grain Weak/Large - Color
+Chrome Strong; FX Blue Strong - WB Auto R+5/B-6; DR400; Smooth Skin
+Off - Highlight -2; Shadow -1; Color +4 - Sharpness 0; NR -4; Clarity 0
+
+VINTAGE POSTCARDS Base: bilou.chrome.v1; author @shadesofgrainy -
+Classic Chrome; Grain Weak/Small - Color Chrome Off; FX Blue Off - WB
+Auto R+5/B-8; DR400; Smooth Skin Off - Highlight -1; Shadow -1; Color
+-1 - Sharpness -2; NR -1; Clarity -3 - Exposure 0; ISO unknown
+
+EDDY’S POINT & SHOOT Base: bilou.negative.v1; author @eddymaynard -
+Classic Negative; Grain Strong/Large - Color Chrome Off; FX Blue Weak -
+WB Auto R+4/B-4 - DR unknown; Highlight +1; Shadow 0; Color +3 -
+Sharpness unknown; NR unknown; Clarity unknown - Exposure unknown; ISO
+unknown - Creator reportedly uses Tiffen Black Pro-Mist. Do not claim
+negative clarity is equivalent to optical diffusion. Do not merge a
+separate sunset community variant into this recipe.
+
+CLASSIC CUBAN NEG Base: bilou.negative.v1; author @osanbilgi - Classic
+Negative; Grain Strong/Large - Color Chrome Strong; FX Blue Strong - WB
+Auto R+4/B-5; DR400 - Highlight -2; Shadow +1; Color +4 - NR -4; Clarity
+-4 - Sharpness, exposure, ISO, Smooth Skin and output space unknown
+
+CLASSIC SUNGLASSES VIEW Base: bilou.negative.v1; author
+@pharrow_photography - Classic Negative; Grain Off - Color Chrome
+Strong; FX Blue Strong - WB Auto R+2/B-4; DR400 - Highlight -2; Shadow
+0; Color +3 - Sharpness, NR, Clarity, exposure, ISO and Smooth Skin
+unknown
+
+Data rules: - preserve author and source URL; - preserve original source
+text and units; - keep ISO/exposure guidance in CaptureGuidance; - never
+convert capture guidance into a fixed render value; - never replace
+unknown with a guessed default; - validate every base profile ID at load
+time.
+
+===============================================================================
+13. RECIPE EFFECT MAPPING
+===============================================================================
+
+Published setting -> RecipeSettingMapper -> validation/capability check
+-> Bilou-native parameters -> RecipeResolver -> RenderGraph.
+
+Dynamic Range: Preserve DR100/200/400/DR-P as source labels. Any Bilou
+highlight-protection effect is separately named, optional, estimated and
+versioned.
+
+White Balance: Source-aware for RAW. Approximate for processed images.
+Keep source preset and R/B shift separate from native colour adaptation.
+
+Highlight/Shadow: Separate controls with defined ranges and sign
+convention. The second report identified a possible sign mismatch in
+Fujilab. Recommended Fuji-style convention: positive Shadow darkens
+shadows; negative Shadow lifts them. Add a unit test for sign.
+
+Color: Global saturation is only a starting approximation.
+
+Color Chrome: Separate chroma/lightness selective operation; smooth
+masks; not proprietary Fujifilm implementation.
+
+FX Blue: Separate blue/cyan response; smooth hue/chroma/lightness masks;
+test sky, shadows, skin and saturated fabrics.
+
+Grain: Spatial stochastic model. Amount, scale/size,
+roughness/distribution, optional chromatic character, deterministic
+still seed. Scale relative to output dimensions, not preview pixel
+coordinates. Video requires temporal stability.
+
+Clarity: Local contrast, not blur. Negative clarity is not a Pro-Mist
+simulation.
+
+Sharpening: Spatial operation with radius, amount, threshold and halo
+control.
+
+Noise reduction: Source-aware. RAW development NR differs from recipe
+NR; processed images may already have computational denoising. Avoid
+repeated texture destruction.
+
+Halation/Bloom/Vignette: Spatial operations, not LUT entries.
+Halation/bloom require bright-region detection and spatial spread;
+vignette depends on pixel coordinates.
+
+===============================================================================
+14. PHOTO PIPELINE: CAPTURE TO EXPORT
+===============================================================================
+
+Photo capture/import -> metadata reader -> format decoder ->
+orientation/crop normalization -> source type router -> source-specific
+development -> input colour identification -> working colour space ->
+exposure/WB normalization -> base Film Simulation -> recipe tone/colour
+controls -> spatial effects -> output gamut mapping -> output
+transfer/encoding -> export + sidecar + provenance
+
+HEIC/JPEG: - inspect embedded colour profile and metadata; - decode and
+normalize orientation; - preserve original; - decide HDR/gain-map
+handling explicitly; - do not expect RAW-level highlight recovery.
+
+Bayer RAW/DNG: RAW is not display-ready RGB. A real development path may
+need black/white levels, CFA pattern, demosaic, WB, camera colour
+transform, highlight reconstruction, lens shading and output transform.
+DNG variants differ.
+
+Apple ProRAW: Treat as computational RAW, not untouched Bayer. Use
+Apple’s supported decode/rendering APIs and preserve original metadata.
+Do not assume generic Bayer demosaic is enough.
+
+Preview: Lower resolution and cheaper spatial effects are allowed, but
+parameter meaning and intended colour transform must match final render.
+Cancel stale preview work.
+
+Final: Full resolution, higher quality sampling, correct output profile,
+optional deterministic grain seed. No undocumented preview-only
+approximation.
+
+Quality tiers: preview / capture / export. Tiers alter computational
+quality, not artistic semantics.
+
+Concurrency: - bounded render queues; - cancel obsolete preview work; -
+reuse textures and Metal pipelines; - do not allocate full-resolution
+buffers per effect unnecessarily; - run export away from main thread; -
+observe memory warnings and thermal state; - use tiling/region rendering
+when necessary.
+
+Non-destructive editing: Persist original asset, edit session, recipe
+ID/version, profile ID/version, user overrides, engine version, output
+options, and deterministic seeds. Use sidecar JSON. Never overwrite the
+only original.
+
+===============================================================================
+15. OUTPUT AND PERSISTENCE
+===============================================================================
+
+Initial output targets: - JPEG / sRGB - HEIF / supported output colour
+profile
+
+Offer Display P3 only after end-to-end export and metadata tests pass.
+
+Persist appropriate metadata: capture date, device model, dimensions,
+colour profile, Bilou version, recipe/profile IDs and versions, render
+engine version, and user override summary. Location metadata must follow
+an explicit privacy/export setting.
+
+Illustrative sidecar: { “schemaVersion”: 1, “assetId”: “asset-uuid”,
+“recipe”: {“id”: “alpine-gold.v1”, “version”: 1}, “filmSimulation”:
+{“id”: “bilou.chrome.v1”, “version”: 1}, “engine”: {“name”:
+“BilouRender”, “version”: “0.1.0”}, “workingColorSpace”:
+“extended-linear-display-p3”, “output”: {“format”: “heic”, “colorSpace”:
+“display-p3”}, “overrides”: {}, “renderSeed”: 123456 }
+
+Illustrative only; support must be verified before exposing a format
+option.
+
+===============================================================================
+16. TEST AND VALIDATION PLAN
+===============================================================================
+
+Unit tests: - colour conversion and transfer functions; - exposure and
+WB mapping; - LUT parsing and interpolation; - recipe schema and
+resolver; - effect neutral/off behaviour.
+
+Golden-image tests: Use Bilou-owned or licensed images: neutral ramp,
+skin, saturated primaries, blue sky, foliage, indoor tungsten, mixed
+lighting, deep shadows, highlights, fine texture, high ISO noise,
+out-of-gamut colours.
+
+LUT tests: - valid and malformed fixtures; - grid size and N^3 entry
+count; - domain min/max; - trilinear and optional tetrahedral; -
+corners, edges, centre, random samples; - neutral/saturated ramps; -
+out-of-domain behaviour; - NaN/Inf; - CPU/Metal comparison.
+
+Profile tests: - valid manifest and provenance; - explicit input/output
+contract; - deterministic output; - no clipping or invalid values; -
+independent Chrome and Negative paths; - no fallback; - profile version
+persisted.
+
+Recipe tests: - all eight JSON definitions decode; - five map to Chrome,
+three to Negative; - missing values remain nil; - not_provided differs
+from zero; - unknown IDs fail; - user edits never overwrite source
+settings; - reset functions work.
+
+Device/performance: Measure on actual iPhones: preview latency, export
+time, memory peak, GPU use, cancellation, thermal behaviour, and
+12MP/high-resolution inputs. Do not publish performance promises before
+measurement.
+
+No-dataset tests can prove parser integrity, numerical stability,
+declared domain behaviour, neutral/ramp behaviour, no obvious
+clipping/banding, CPU/GPU consistency and deterministic rendering. They
+cannot prove Fujifilm equivalence or exact reproduction across
+scenes/camera generations.
+
+===============================================================================
+17. IMPLEMENTATION ROADMAP
+===============================================================================
+
+Assumption: 2-5 engineers with iOS, rendering and QA experience. A solo
+developer should extend the schedule.
+
+PHASE 0 — Git/source/licence audit (3-5 working days, P0) - clone
+repositories and pin commits; - inspect source, assets, licences and
+third-party notices; - quarantine unclear assets; - create
+THIRD_PARTY_NOTICES and ASSET_PROVENANCE; - establish app skeleton and
+CI. Exit: no unclear-licence asset enters production.
+
+PHASE 1 — Colour science foundation (1-2 weeks, P0) - colour descriptors
+and transfer functions; - working-space policy; - conversions and gamut
+policy; - HDR/gain-map v1 decision; - reference-value tests. Exit: no
+implicit sRGB assumption.
+
+PHASE 2 — LUT infrastructure (1-2 weeks, P0) - .cube parser and
+fixtures; - only required .3dl variant; - CPU sampler; - Metal
+sampler; - domain/interpolation tests; - manifest/checksum/cache. Exit:
+CPU/Metal within measured tolerance.
+
+PHASE 3 — bilou.chrome.v1 (1-2 weeks, P0) - CPU reference; - Metal
+transform; - optional LUT bake; - Bilou-owned visual tuning; - manifest
+and tests. Exit: independently selectable Chrome profile.
+
+PHASE 4 — bilou.negative.v1 (1-2 weeks, P0) - separate model, CPU and
+Metal; - independent manifest; - no-fallback test; - visual tuning and
+validation. Exit: independently selectable Negative profile.
+
+PHASE 5 — Registry and Recipe Engine (1-2 weeks, P0) - typed IDs and
+registry; - source/native/capture schemas; - provenance/status; -
+validator and resolver; - eight JSON definitions; - user overrides.
+Exit: all eight recipes resolve to the correct two profiles.
+
+PHASE 6 — Effects (2-3 weeks, P1) - exposure, WB, highlight/shadow,
+colour; - Color Chrome, FX Blue; - grain, clarity, sharpening, NR; -
+vignette and optional halation/bloom. Exit: every effect has a domain,
+parameter contract, neutral state and tests.
+
+PHASE 7 — Photo capture/import (2-3 weeks, P1) - AVFoundation photo
+capture; - capabilities; - HEIC/JPEG; - RAW/ProRAW only when correctly
+supported; - preview and full-resolution rendering. Exit: stable
+colour-managed photo path and original preservation.
+
+PHASE 8 — Persistence/export/UX (1-2 weeks, P1) - sidecars and edit
+sessions; - JPEG/HEIF; - metadata and output profiles; - recipe browser,
+inspector, before/after. Exit: capture/import -> select -> edit ->
+export -> reopen.
+
+PHASE 9 — Device QA/optimization (1-2 weeks, P1) - test multiple iPhone
+generations where available; - memory, thermal and GPU profiling; -
+regression and licence review. Exit: release candidate with documented
+limitations.
+
+Indicative total: roughly 12-18 weeks for a small team, depending on
+RAW, quality targets and device coverage. One developer should expect
+longer.
+
+===============================================================================
+18. FUTURE VIDEO ARCHITECTURE
+===============================================================================
+
+Photo: AVCapturePhotoOutput -> PhotoCaptureController -> PhotoRenderer
+
+Video: AVCaptureVideoDataOutput / AVCaptureMovieFileOutput ->
+VideoCaptureController -> VideoFrameNormalizer -> VideoRenderer ->
+bounded frame queue -> encoder/export
+
+Share colour descriptors, transfer functions, profile identity, recipe
+resolution and selected kernels. Do not share the capture controller.
+
+Video additionally needs: - frame timing and dropped-frame policy; -
+audio synchronization; - temporal grain/noise model; - long-session
+thermal management; - codec and encoder configuration; - per-frame
+colour metadata; - sustained performance tests.
+
+Apple Log is a transfer/encoding characteristic, not a codec. ProRes is
+a codec family, not a colour space. Apple Log and Apple Log 2 are
+distinct. Do not apply a display-referred LUT to Log without the correct
+input transform.
+
+Do not start video until photo colour contracts, registry, recipe
+resolver, Metal kernels, memory management and export metadata are
+stable.
+
+===============================================================================
+19. RISKS AND MITIGATIONS
+===============================================================================
+
+Unclear licence -> quarantine; no shipping until approved. Classic
+Negative fallback -> strict IDs, validator, independent tests. Guessed
+input colour -> explicit metadata and source decoder. DR400 generic
+curve -> source label + optional Bilou highlight approximation. WB
+copied as RGB gains -> source-aware, versioned mapping. LUT highlight
+clipping -> domain/extrapolation policy and ramp tests. Spatial effects
+inside LUT -> separate render graph nodes. Preview/export mismatch ->
+same semantics and golden-image tests. CPU/GPU precision mismatch ->
+measured precision-specific tolerances. High-resolution memory spike ->
+pooling, tiling, bounded concurrency. Recipe source overwritten ->
+immutable source settings + user overrides. Overstated marketing ->
+approximation disclosure and provenance inspector.
+
+===============================================================================
+20. FIRST 20 IMPLEMENTATION TICKETS
+===============================================================================
+
+P0-001 App skeleton, CI and test target. P0-002 Repository audit
+templates and third-party notices. P0-003 ColorSpaceDescriptor and
+TransferFunction. P0-004 sRGB encode/decode tests. P0-005 Working-space
+policy. P0-006 LUT3D model and validation. P0-007 .cube parser and
+fixtures. P0-008 CPU trilinear sampler. P0-009 Metal LUT sampler. P0-010
+CPU/Metal parity tests. P0-011 FilmSimulationID and profile protocol.
+P0-012 FilmSimulationRegistry. P0-013 Chrome CPU reference. P0-014
+Negative CPU reference. P0-015 Separate manifests and validation. P0-016
+Profile selection/no-fallback tests. P0-017 Published and source schema.
+P0-018 NativeRecipeParameters and CaptureGuidance. P0-019
+RecipeRegistry, validator and resolver. P0-020 Eight recipe JSON files
+with null unknowns.
+
+===============================================================================
+21. FINAL RELEASE CHECKLIST
+===============================================================================
+
+ARCHITECTURE [ ] UI contains no colour-science implementation. [ ]
+Capture controller contains no recipe-specific look logic. [ ] Chrome
+and Negative are independent. [ ] Registry rejects duplicate and unknown
+IDs. [ ] Recipe resolver does not mutate profiles. [ ] Photo and video
+capture paths are separate.
+
+SOURCES AND LICENCES [ ] Exact commit hashes recorded. [ ] Every code
+dependency has licence decision. [ ] Every LUT has provenance and
+checksum. [ ] No unclear-licence LUT shipped. [ ] Third-party notices
+included. [ ] Vendor components audited independently.
+
+COLOUR [ ] Primaries and transfer functions explicit. [ ] Working space
+explicit. [ ] HDR/SDR policy explicit. [ ] LUT domain and extrapolation
+explicit. [ ] RAW and processed inputs use separate paths. [ ] WB
+mapping documented and versioned.
+
+PROFILES AND RECIPES [ ] bilou.chrome.v1 passes. [ ] bilou.negative.v1
+passes. [ ] Negative never falls back to Chrome. [ ] Both profiles
+independently selectable. [ ] All eight recipes decode and resolve. [ ]
+Unknown values remain null. [ ] Source settings and native parameters
+separate. [ ] Overrides do not rewrite provenance.
+
+RENDER AND EXPORT [ ] CPU reference exists. [ ] Metal parity tested. [ ]
+Spatial effects separate from LUT. [ ] Preview/export semantics match. [
+] Memory and concurrency bounded. [ ] Original preserved. [ ] Sidecar
+and edit session reopen correctly. [ ] Output colour profile and
+metadata verified.
+
+===============================================================================
+22. REFERENCES
+===============================================================================
+
+Fujilab: https://github.com/MatthewGreenberg/fujilab
+
+Fuji Recipe Converter: https://github.com/sadziu/Fuji-Recipe-Converter
+
+Fuji Recipes Parser: https://github.com/thecuvii/fuji-recipes
+
+LightCraft: https://github.com/storytold/lightcraft
+
+Fuji XTrans III LUT pack reference:
+https://blog.sowerby.me/fuji-xtrans-iii-lut-pack/
+
+Apple AVCapturePhotoOutput:
+https://developer.apple.com/documentation/avfoundation/avcapturephotooutput
+
+Apple RAW and ProRAW:
+https://developer.apple.com/documentation/avfoundation/capturing-photos-in-raw-and-apple-proraw-formats
+
+Core Image: https://developer.apple.com/documentation/coreimage
+
+CIColorCubeWithColorSpace:
+https://developer.apple.com/documentation/coreimage/cicolorcubewithcolorspace
+
+Metal: https://developer.apple.com/metal/
+
+ExifTool: https://exiftool.org/
+
+Exiv2: https://exiv2.org/
+
+LibRaw: https://www.libraw.org/
+
+===============================================================================
+23. FINAL ENGINEERING CONCLUSION
+===============================================================================
+
+Build two independent, versioned base profiles and one reusable Recipe
+Engine.
+
+FilmSimulationRegistry | +—- bilou.chrome.v1 | +—- bilou.negative.v1
+
+Five recipes resolve to Chrome; three resolve to Negative. Recipes are
+configuration data layered on top of the base profile. They are not
+eight separate base filters.
+
+Keep these boundaries strict: - colour transforms are not spatial
+effects; - source camera settings are not Bilou render coefficients; -
+capture guidance is not post-processing; - a community model is not a
+proprietary camera reference; - technical correctness is not proof of
+visual parity.
+
+Audit and license Git sources before reuse. Build colour contracts and
+LUT infrastructure first. Implement Chrome and Negative independently.
+Register them. Then build the Recipe Engine and load the eight recipes.
+Add advanced effects, full camera UX, and video only after this
+foundation is stable.
+
+This document is the recommended Bilou Camera v2 engineering baseline.

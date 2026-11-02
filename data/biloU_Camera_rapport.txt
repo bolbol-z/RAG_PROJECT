@@ -1,0 +1,1822 @@
+================================================================================
+BILOU CAMERA — Comprehensive Architectural & Implementation Report
+(Photo Stage First)
+Photo Architecture & Implementation Report
+================================================================================
+Date           : 2026-10-31
+Version        : 1.0
+Scope          : Photos NOW — Video in a subsequent report
+Platform       : iOS / iPhone — Swift, AVFoundation, Core Image, Metal
+Language       : English with technical terms (matching the codebase)
+Source         : biloU_Camera.txt file (Engineering Blueprint v1.0) + Actual audit
+                 of three cloned GitHub repositories (see Section 1)
+
+--------------------------------------------------------------------------------
+Table of Contents
+--------------------------------------------------------------------------------
+ 0. Governing Principle: Independent Approximation, Not Copying
+ 1. Actual Repository Audit Results (What was actually found)
+ 2. General Architecture / Conception of the Photo Pipeline
+ 3. Classic Chrome Architecture — Step-by-Step from Repositories
+ 4. Classic Negative Architecture — Step-by-Step from Repositories
+ 5. Recipe Engine Architecture on top of Film Simulation
+ 6. Suggestions, Tips, and Fixes
+ 7. Photo Roadmap (2–5 developer team)
+ 8. What Changes When Video is Added
+ 9. Open Decisions + First 12 Tasks for Execution
+ Appendix A: Inspection Commands Used
+ Appendix B: Transferred Parameter Tables from Sources
+ Appendix C: Proposed Swift Structures
+ Appendix D: Glossary
+
+Reading Note: Anything written as "found / verified" originates from actual files in
+the repositories at the inspection date (hashes in Section 1). Anything written as
+"propose / view" is my professional opinion. Anything requiring additional verification
+(especially Apple APIs and licensing status) is marked with [VERIFY].
+
+
+================================================================================
+0. Governing Principle: Independent Approximation, Not Copying
+================================================================================
+
+0.1 Official Project Formula
+---------------------------
+Bilou Camera does not take and does not claim to take anything from Fujifilm. It is an independent
+color engine providing an "approximation" of popular Film Simulation looks, built on:
+  - Publicly published recipe settings from their authors (settings = facts about camera settings).
+  - Open source models with clear licenses (MIT) describing a look with manually tuned parameters.
+  - Our own custom visual tuning (Bilou native tuning) documented as an independent source.
+
+The result is "close" and not "identical" — and may not be exactly the same at all. This is not a flaw
+to hide; it is part of the product identity and must be visible in the UI, code, and App Store.
+
+0.2 Strict Rules (Non-Negotiable)
+---------------------------------
+ 1. No original Fujifilm LUTs, no proprietary RAF decoding, no internal parameters.
+ 2. Do not use terms like "Fujifilm LUT", "Authentic", "Exact", or "Identical".
+ 3. Every asset file (LUT/JSON) must have a manifest containing its source, license, and checksum.
+ 4. Do not ship any asset whose license is unclear (Section 1.4 clarifies this applies to current Fujilab LUTs).
+ 5. Every recipe retains its author's name, source, and link.
+ 6. Unknown values remain null and are not filled with default values.
+
+0.3 Suggested UI Strings
+------------------------
+ AR: "مظهر مستوحى من أفلام Fujifilm — تقريب مستقل، وليس نسخة رسمية ولا مطابقة لها."
+ EN: "Film-look inspired by popular Fujifilm recipes. An independent
+      approximation — not an official or identical rendering."
+ FR: "Rendu inspiré des recettes Fujifilm. Approximation indépendante —
+      ni officielle, ni identique."
+ Provenance badges in Recipe Inspector:
+   [Published setting]  Published setting from recipe author
+   [Community model]    Open community model (source + license)
+   [Bilou native]       Custom parameter in our engine
+   [Estimated]          Estimated
+   [Not provided]       Not provided (null)
+
+0.4 Trademark Note (Important Advice)
+--------------------------------------
+"Classic Chrome", "Classic Negative", "Film Simulation", and "Fujifilm" are names
+associated with Fujifilm trademarks (this is a cautious estimate by me, not legal advice).
+When shipping on the App Store, IP review may raise questions. I suggest:
+  - Inside the code: You may keep identifiers classic-chrome / classic-negative
+    for published recipe terms and metadata binding.
+  - In the final user interface: Neutral names such as "Chrome (Bilou)" and
+    "Negative (Bilou)" + an "inspired by" line.
+  - Obtain a short legal review before public TestFlight.
+  - No Fujifilm logos or images, and no official connection to the camera.
+
+0.5 Internal Closeness Scale (Not a Marketing Claim)
+------------------------------------------------------
+Since your goal is a "very close ratio", we need a way to measure closeness without claiming identity.
+I propose an internal scale for developers only (Section 3.9):
+   Reference Closeness Score = Average ΔE00 between Bilou output and community
+   reference output on a fixed standard color set.
+Used for parameter tuning and regression detection, it is never shown to the user as an
+"identical to Fujifilm" percentage because the reference itself (community LUT) is not original Fujifilm.
+
+
+================================================================================
+1. Actual Repository Audit Results
+================================================================================
+
+I cloned the three repositories (clone --depth 1) and read the files. Here is what I found:
+
+1.1 Fujilab (MatthewGreenberg/fujilab)
+----------------------------------------
+Checked Commit : cd295b04768eb363f83786578e0baa33c7c9903e
+Structure      : React + Vite + WebGL2 (GLSL), Main files:
+                 src/gpu/renderer.js (409 lines — shader and processing pipeline)
+                 src/lut.js (69 lines — parse3DL and parseCube)
+                 src/recipes.js (398 lines) and src/recipeParser.js (218 lines)
+
+(A) Licensing — The Most Important Discovery
+   - No LICENSE file in the repository root.
+   - package.json contains no "license" field.
+   - README states only that .3dl files are "derived from the Fuji XTrans III LUT pack".
+   => Code and assets are unlicensed. Legally, "unlicensed" means rights are
+      reserved to the author by default, meaning we have no right to redistribute or derive without
+      permission. The blueprint states "if license is missing, do not ship" — this is the current state.
+
+(B) LUT Files (15 .3dl files in public/luts/)
+   Acros, Acros+G, Acros+R, Acros+Ye, Astia, Classic Chrome, Mono, Mono+G,
+   Mono+R, Mono+Ye, Pro Neg Hi, Pro Neg Std, Provia, Sepia, Velvia.
+   (README mentions "12 looks" but actual files are 15.)
+
+   No Classic Negative, Eterna, Nostalgic Neg, or Reala Ace.
+
+(C) Classic Chrome File Specifically
+   Name     : Fuji XTrans III - Classic Chrome.3dl
+   SHA-256  : a9f54ff5e2d9bd64d84bf7e5249f248122bc49bcae740afe69a2d34bb92f8c77
+   Lines    : 4915 = comment + shaper line + 4913 entries = 17^3 (17x17x17 grid)
+   Depth    : Values up to 4095 => 12-bit
+   Shaper line: "0 64 128 192 ... 959 1023" (17 values, up to 1023)
+   Header   : "#Fujifilm Fuji XTrans III - Classic Chrome — analytically generated"
+   => "analytically generated" means the file is analytically generated (mathematical model)
+   rather than measured from a camera. The file name bears Fujifilm's name, so the origin
+   is community/unofficial with ambiguous origins (Section 1.4).
+   Technical note: First table entries (155 174 189) are not (0 0 0) — meaning
+   blacks are lifted, which is intentional for film look, but means the LUT carries an internal
+   tone curve (should not be tested as a "color-only LUT").
+
+(D) How Fujilab Applies the LUT (from renderer.js) — Actual Processing Order
+   1. 3D LUT (trilinear in hardware) with .bgr swizzle and scale/offset.
+   2. Channel curves (256x3 texture).
+   3. Color Chrome / FX Blue (HSV-hue space calculation).
+   4. Highlights / Shadows (direct addition to values).
+   5. Temperature / Tint (addition to R/G/B — after LUT).
+   6. Saturation / Vibrance.
+   7. Vignette.
+   8. Grain (based on gl_FragCoord and hash, non-temporal).
+   9. High-light desaturation (luma > 0.85) then clamp.
+
+(E) Quality/Design Notes on Fujilab Code (Affecting Our Decisions)
+   - No Input Transform: Image enters directly (sRGB/browser) into LUT.
+     We must have an explicit conversion (Display P3 / HDR) — see 2.5.
+   - White balance is applied after LUT additively in encoded (gamma) space
+     rather than linear light multiplication. Blueprint (Sections 1.2 and 9) requires WB
+     before LUT. => We do not copy this order.
+   - Grain relies on gl_FragCoord/cellSize => size changes relative to resolution between preview
+     and export. Ours must be resolution-independent.
+   - Browser-bound and mostly limited to 8-bit; we work in float16 in Metal.
+   - Color Chrome code relies on hard thresholds (sat > 0.15, hue < 200) — may cause
+     abrupt transitions; Blueprint 9 warns against hard thresholds.
+   - Shadow signal: See 1.5 (potential important signal inversion).
+
+(F) Regarding Classic Negative in Fujilab
+   - recipeParser.js (lines 46–48) maps "classic negative" and "classic neg"
+   to a fallback: "Classic Chrome" with warning "Classic Negative approximated with Classic Chrome".
+   => This is precisely the risk warned against by the blueprint (Risk: Classic Negative =
+   Classic Chrome + adjustment). Fujilab falls into it. We prevent it via a
+   validator rule (Section 4.8).
+   - recipes.js: Number of recipes by filmSim: Classic Chrome 33, Pro Neg Std 6,
+   Astia 2, Provia 2, one each for Acros, Mono+R, Pro Neg Hi, Velvia,
+   and zero for Classic Negative.
+
+1.2 Fuji Recipe Converter (sadziu/Fuji-Recipe-Converter)
+----------------------------------------------------------
+Checked Commit : a6691ea0e880ddd5fd19d7ca2d48a502fb0e7e07
+Licence        : MIT — "Copyright (c) 2026 Sadziu and contributors" (LICENSE present)
+THIRD-PARTY    : Contains notices for embedded components: Lucide (ISC), Tesseract.js
+                 (Apache-2.0), heic-to (LGPL-3.0) inside vendor/ folder.
+                 => We take only the mathematical model from js/data.js and js/engine.js
+                 (project code itself under MIT) and do not copy vendor/ or
+                 heic-to (LGPL-3.0 has special conditions).
+Files          : js/engine.js (293 lines), js/data.js (229), js/export.js (187),
+                 js/parser.js (268), js/app.js (604), tests/tests.html.
+
+What it actually provides (our most important asset):
+   - Film Simulation model as "differences from PROVIA/Standard" in Lightroom-like
+     units: general sat, shadow, high, lift, hue/satB/lum for 8 color ranges,
+     grade (split toning), and mono.
+   - Independent definition for classic-chrome and classic-neg (and pro-neg-hi/std,
+     nostalgic-neg, reala-ace, velvia, astia, monochrome...).
+   - derive(recipe) function converting recipe settings to a "look".
+   - makeTransform(look) function converting a look to a color function on sRGB/Rec.709.
+   - buildLut(look, n) function building a LUT (n^3, red varies fastest) — export
+     in sizes 17/33/65 (export.js).
+   - Preview itself passes through the same exported LUT (excellent principle: preview == export).
+   - tests/tests.html: In-browser tests.
+
+Explicit Author Acknowledgment (README section "How accurate is it?"):
+   - Numbers are "estimates, not measurements", not verified against camera JPEGs.
+   - LUT expects Rec.709/sRGB, and for Log, conversion must happen first.
+   - README: Repository contains no Fujifilm or Adobe software/LUTs/logos.
+   => This frankness aligns perfectly with your philosophy: "approximation, not copying".
+
+1.3 fuji-recipes (thecuvii/fuji-recipes)
+-------------------------------------------
+Checked Commit : d46d60ee188d443f1efcce0c0022bf64f6f4243d
+Licence        : MIT (README and package.json)
+Content        : TypeScript library for reading Fujifilm MakerNotes from EXIF
+                 (src/parse.ts, tags.ts, constants.ts, types.ts, format.ts).
+Role           : Importing recipes from real Fujifilm images (later optional feature)
+                 + reference for field names. Contains no color or LUTs.
+
+1.4 Higher Source (Stuart Sowerby — Fuji XTrans III LUT pack)
+--------------------------------------------------------------
+- Fujilab states LUTs are derived from this pack. README link in Fujilab is
+  blog.sowerby.me/fuji-film-simulation-profiles/ while blueprint mentions
+  blog.sowerby.me/fuji-xtrans-iii-lut-pack/ — links differ; use what actually appears
+  on the site and save a copy of the terms page at verification time. [VERIFY]
+- Quick search found no explicit license for the pack. Discussion on pixls.us forum
+  includes questions about licensing without clear answers in snippets shown, and another post
+  stating no explanation of the basis of these LUTs exists. Some posts indicate X-Trans III pack
+  has an embedded tone curve (non-linear) — confirming LUT has a specific "input contract" (see 2.5).
+- These are indicators, not a legal ruling. Professional decision: **We treat these LUTs as study
+  and comparison reference only, and do not ship them** until written permission or a clear license is received.
+
+1.5 Warning: Shadow Tone Signal Direction (Potential Bug in Fujilab)
+----------------------------------------------------------------------
+- Per Fujifilm educational sources and forums: Positive Highlight Tone = brighter highlights;
+  Positive Shadow Tone = darker shadows (inverted direction). Negative shadow = brighter shadows.
+- In Fujilab: recipeParser sets adj.shadows = Math.round(val * 10) without inversion,
+  and the shader adds (shadows/100 * 0.5 * sw^2) to color => positive value brightens
+  shadows. This is the reverse of Fuji behavior (unless I misread the rest of the code).
+- In Fuji Recipe Converter: curve[0.25] = 0.25 - shadow where shadow = positive
+  value * 0.022 => positive darkens shadows, matching Fuji.
+=> Our decision: Adopt Fuji convention (Shadow + = darker) as in Recipe Converter,
+   and add a unit test proving it. This exemplifies why Fujilab constants cannot be copied as-is.
+
+1.6 Summary: What Do We Do with Each Asset?
+------------------------------------------------
++--------------------------+----------------+----------------------------------+
+| Asset                    | License        | Our Decision                     |
++--------------------------+----------------+----------------------------------+
+| Recipe Converter: Code   | MIT            | Use mathematical model (rewritten|
+| engine.js + data.js      |                | in Swift) with attribution and   |
+| (Color Model)            |                | LICENSE in THIRD_PARTY_NOTICES   |
++--------------------------+----------------+----------------------------------+
+| Recipe Converter: vendor | Apache/ISC/    | Do not copy at all               |
+| (tesseract, heic-to...)  | LGPL-3.0       |                                  |
++--------------------------+----------------+----------------------------------+
+| fuji-recipes (MakerNote) | MIT            | Optional later (recipe import)   |
++--------------------------+----------------+----------------------------------+
+| Fujilab: Code/Shader     | Unspecified    | Concepts study only, no copied code|
++--------------------------+----------------+----------------------------------+
+| Fujilab: 15 .3dl files   | Unspecified +  | Internal comparison reference    |
+|                          | ambiguous origin| only, not shipped (w/o written) |
++--------------------------+----------------+----------------------------------+
+| Sowerby pack (Original)  | Uncertain      | Reference, after terms check     |
++--------------------------+----------------+----------------------------------+
+
+Strategic Result: The safe and robust path is **generating our own LUT from a parametric model
+(Route A)**, because it:
+   (1) is legally clean (MIT + our tuning),
+   (2) allows LUT regeneration for any color space (sRGB/P3) and grid size,
+   (3) gives us Classic Negative which has no original LUT in Fujilab,
+   (4) makes recipes mergeable into a single computed LUT (Look Compiler).
+
+
+================================================================================
+2. General Architecture / Conception of the Photo Pipeline
+================================================================================
+
+2.1 Design Principles (Decisions Governing Everything)
+------------------------------------------------------
+ P1. Film Simulation = independent base profile. Recipe = data layer above it.
+     No "filter per recipe".
+ P2. Three separate layers always: Source Settings (author's published) →
+     Mapping (versioned mapping) → Native Parameters (executed by our engine).
+ P3. Each processing stage has a "contract": input space, output space,
+     parameters, neutral behavior (neutral = no change), and CPU test reference.
+ P4. Base color = 3D LUT generated from a parametric model (Look Compiler). Spatial effects
+     (grain, clarity, sharpen, NR) are separate kernels.
+ P5. Preview and export use the same functions and LUT at two different resolutions
+     (preview == export principle seen in Recipe Converter).
+ P6. Nothing is "assumed": Every color space and device capability is read at runtime.
+ P7. Determinism: Same (image + recipe + versions) = same output.
+ P8. Honesty: Every asset and parameter carries provenance; nothing is called "Fujifilm".
+ P9. Non-destructive export: Original is always saved, editing = data (JSON).
+ P10. Core Image as coordinator + Metal as executor (Section 2.10) to minimize risks for a small team.
+
+2.2 Layer Diagram
+------------------
+   +-----------------------------------------------------------------------+
+   |  UI (SwiftUI)  Camera | RecipeBrowser | Inspector | Editor | Export   |
+   +-----------------------------------------------------------------------+
+   |  Application layer (actors): CaptureCoordinator, EditSession,         |
+   |  RenderCoordinator, ExportService                                     |
+   +------------------------+----------------------------------------------+
+   |  Recipe Engine         |  Film Simulation layer                       |
+   |  Recipe / Mapper /     |  Profile registry (Chrome, Negative)         |
+   |  Validator / Resolver  |  LookModel (parametric) + LUT assets         |
+   +------------------------+----------------------------------------------+
+   |  Look Compiler  (Profile + Recipe params + LookSpace  ->  baked 3D LUT)|
+   +-----------------------------------------------------------------------+
+   |  Rendering: Core Image graph + custom Metal kernels (+ CPU reference) |
+   +-----------------------------------------------------------------------+
+   |  ColorScience (spaces, transfer functions, matrices, gamut mapping)   |
+   +-----------------------------------------------------------------------+
+   |  Capture (AVFoundation) | Media I/O (ImageIO/PhotoKit) | Persistence  |
+   +-----------------------------------------------------------------------+
+
+Dependency direction: Top to bottom only. ColorScience knows nothing about UI
+or recipes; FilmSimulation knows nothing about AVFoundation; Recipe Engine knows nothing about Metal
+(produces data and LUT only).
+
+2.3 Proposed Swift Package Modules (Monorepo)
+----------------------------------------------
+ BilouColorScience      ColorSpaceDescriptor, TransferFunction, Matrix3x3,
+                        GamutMapping, ColorConversion  (+ Tests/ColorScienceTests)
+ BilouLUT               LUT3D, CubeParser, ThreeDLParser, LUTManifest,
+                        CPUSampler (trilinear + tetrahedral)
+ BilouFilmSim           FilmSimulationProfile, LookModel, LookTransform (CPU
+                        reference), Registry, Provenance
+ BilouRecipe            Recipe, SourceRecipeSettings, NativeParameters,
+                        RecipeMapper (versioned), Validator, Resolver
+ BilouRender            RenderGraph, stages, Metal kernels (.metal), CI wrappers,
+                        TexturePool, PipelineCache
+ BilouCapture           CameraSession, PhotoCapture, CapabilityProbe
+ BilouMedia             Decoder (ImageIO), Orientation, Metadata, Export, PhotoKit
+ BilouPersistence       RecipeStore, EditStore, Sidecar (Codable JSON)
+ BilouApp               SwiftUI app + composition root
+ Tools/                 lut-inspect (CLI), oracle-dump (Node), golden-gen
+ Assets/                profiles JSON + manifests (+ LUT files only if licence OK)
+ Docs/                  THIRD_PARTY_NOTICES.md, ASSET_PROVENANCE.md, ADRs
+
+Rule: Every package is testable without device (macOS test target) except Capture.
+
+2.4 Core Contracts
+------------------
+(Names are illustrative — full code in Appendix C)
+
+ ColorSpaceDescriptor { primaries, transfer, whitePoint, range, isExtended }
+ LookSpace            = Version-fixed ColorSpaceDescriptor (see 2.5)
+ FilmSimulationProfile{ id, version, displayName, lookModel, lookSpace,
+                        provenance, limitations, supportedInputs }
+ LookModel            = Parametric description (tone curve + per-band HSL + split-tone)
+ LUTManifest          = { file, profileId, source, commit, licence, sha256,
+                          format, gridSize, domain, inputSpace, outputSpace,
+                          interpolation, provenanceClass, limitations }
+ Recipe               = { id, name, author, baseSim, source, guidance,
+                          native, provenance, version }
+ RenderRequest        = { asset, recipeRef, overrides, quality, outputSpec,
+                          grainSeed, engineVersion }
+ RenderResult         = { image, appliedParams, warnings[], timings }
+
+2.5 Color Management Policy — Most Important Architecture Decision (Proposed ADR-001)
+------------------------------------------------------------------------------------
+Problem: LUT without a known input space yields incorrect results. Fujilab passes pixels
+to LUT as-is; Recipe Converter explicitly defines "display-referred sRGB/Rec.709".
+With us, images from iPhone mostly arrive in Display P3 (sometimes HDR/gain map).
+
+Proposed Decision:
+  (1) Look Space v1 = Display P3 primaries + sRGB transfer function
+      (i.e., Display P3 encoding used by Apple for display), display-referred,
+      float16 precision allowing values outside [0,1] in non-LUT stages.
+      Reason: Our LUT is generated from a parametric model (we own the definition),
+      so the look can be defined directly in P3 space without clipping color gamut, and without
+      needing an sRGB-measured LUT. sRGB images are converted to P3 losslessly.
+  (2) All "light" stages operate in extended linear Display P3: Exposure (multiply
+      by 2^EV), White balance (red/blue gains), light noise reduction.
+  (3) Before LUT, encode to Look Space (apply sRGB transfer on linear P3),
+      then apply LUT, then spatial stages.
+  (4) Output: HEIC/JPEG in Display P3 with ICC, or sRGB (gamut conversion with
+      soft clip) when "higher compatibility" is chosen.
+  (5) HDR / gain map (modern HEIC): v1 produces SDR only. We read images with explicit
+      tone-mapping to SDR (appropriate Core Image option, [VERIFY] current SDK
+      name: toneMapHDRtoSDR / expandToHDR), and document that gain maps are not
+      saved in output. We do not apply an SDR look to HDR values without explicit decision.
+  (6) LUT manifest records lookSpace; reject loading LUTs that do not match lookSpace.
+  (7) Alternative (if simplicity preferred): Look Space = sRGB as in Recipe Converter
+      strictly, with P3->sRGB conversion before LUT. Easier to compare with references but
+      clips P3 colors and makes images less vibrant on iPhones. I recommend (1).
+  Note: Definition of color ranges (Red/Orange/...) follows look space; therefore
+  parameters are visually retuned within the adopted space, recorded in the manifest.
+
+2.6 Photo Render Graph — Adopted Order
+--------------------------------------
+ Inputs: HEIC / JPEG (v1), then RAW/ProRAW via Apple path (v1.5), then Live Photo
+ still (v2).
+
+ [S0] Decode + Orientation + Metadata        ImageIO / CIImage
+ [S1] Colour-in: to extended linear Display P3
+ [S2] Exposure (post) = linear multiplication (optional, user-controlled)
+ [S3] Relative white balance (R/B shift as linear gains) + user temp/tint
+ [S4] Light noise reduction (before look so shadow noise isn't contrast-amplified)
+ [S5] Encode to Look Space (sRGB TRC on linear P3)
+ [S6] LOOK LUT (generated: base simulation + tone + recipe color ops)
+ [S7] Clarity (local contrast on luma, protected in shadows/highlights)
+ [S8] Sharpening (on luma, per output resolution)
+ [S9] Halation / Bloom / Vignette (optional, disabled by default)
+ [S10] Grain (resolution-independent, fixed seed, luma-weighted)
+ [S11] Output: gamut map -> light dither -> encode -> ICC -> file
+
+ Deliberate deviation notes from Blueprint 7.5 order:
+  - Blueprint puts NR with spatial effects (step 11). I move it before look
+    (S4) because LUT/curve amplifies shadow contrast, thus amplifying noise. Blueprint itself
+    says conceptual order may change. I keep it toggleable and visually measured.
+  - Linear WB before LUT as requested by blueprint. (Fujilab and Recipe Converter
+    both "bake" or apply WB after/inside LUT — we do not copy them here).
+  - DR/Highlight/Shadow/Color/ColorChrome are baked inside LUT (S6) because they are
+    pixel-level tone/color operations, but remain toggleable and editable because
+    LUT is recomputed from parameters (2.7).
+
+ Stage Table (Domain and Execution):
+ +-----+-------------------+----------------+-------------+------------------+
+ | ID  | Stage             | Domain         | Executed    | Toggleable       |
+ +-----+-------------------+----------------+-------------+------------------+
+ | S1  | Colour-in         | linear P3 ext. | fused kern. | No               |
+ | S2  | Exposure          | linear P3      | fused kern. | Yes (0 EV)       |
+ | S3  | White balance     | linear P3      | fused kern. | Yes (0,0)        |
+ | S4  | Noise reduction   | linear/log     | CI/Metal    | Yes              |
+ | S5  | Encode to look    | P3 + sRGB TRC  | fused kern. | No               |
+ | S6  | Look LUT          | look space     | fused kern. | Yes (identity)   |
+ | S7  | Clarity           | look (luma)    | Metal       | Yes              |
+ | S8  | Sharpening        | look (luma)    | CI/Metal    | Yes              |
+ | S9  | Halation/Vignette | linear/look    | Metal       | Yes (default off)|
+ | S10 | Grain             | look (luma)    | Metal       | Yes              |
+ | S11 | Output            | target space   | CI          | No               |
+ +-----+-------------------+----------------+-------------+------------------+
+ "fused kernel" = single kernel combining S1+S2+S3+S5+S6 to minimize memory reads.
+
+2.7 Look Compiler (Component Not in Blueprint — Proposed Addition)
+------------------------------------------------------------------
+Function: Converts (Profile + Recipe Native Params + LookSpace + gridSize) into a
+ready 3D LUT, then caches it.
+
+ Input  : FilmSimulationProfile.lookModel + RecipeNativeParameters (tone/
+          colour ops only) + lookSpace + gridSize (17/33/65)
+ Process: For each node (r,g,b) in grid, call same LookTransform function:
+          curve -> HSL band ops (hue/sat/lum) -> split-toning -> [color chrome]
+ Output : 3D MTLTexture rgba16Float + parameter hash fingerprint.
+ Cache  : Key = sha256(profileId, profileVersion, recipeId, recipeVersion,
+          paramsHash, lookSpace, gridSize, engineVersion) — in-memory and on
+          disk (Caches/). Recomputed only when key changes.
+ Sizes  : Preview 33^3 (quick draft 17^3 during drag), export 65^3 (or 33^3 with
+          tetrahedral). Cost: 65^3 = 274,625 nodes — very small for GPU; expected
+          to be imperceptible but measured on device [measurement required].
+ Exec   : CPU reference version (Swift) + Metal compute version of same function;
+          tests compare both on fixed inputs.
+ Benefit: Editing Highlight or Color Chrome via slider = fast re-bake, without
+          extra shader kernel, and each recipe = single LUT => stable performance.
+
+ Resolution Precision (Table): Initial 17^3 LUT with sharp curve data may show
+ banding; hence 33^3 is minimum for preview, 65^3 for export.
+
+2.8 Photo Capture Layer
+-----------------------
+ - AVCaptureSession (preset .photo) + AVCapturePhotoOutput + AVCaptureDeviceInput.
+ - CapabilityProbe reads runtime and builds struct:
+     PhotoCapabilities {
+        processedCodecs: [HEVC, JPEG]
+        rawFormats: [Available Bayer RAW formats]
+        proRAWSupported / proRAWEnabled
+        maxPhotoDimensions
+        colorSpaces: [sRGB, P3_D65, ...]
+        qualityPrioritization (speed/balanced/quality)
+     }
+   (Properties from AVCapturePhotoOutput: availablePhotoCodecTypes,
+    availableRawPhotoPixelFormatTypes, isAppleProRAWSupported/Enabled,
+    maxPhotoQualityPrioritization, maxPhotoDimensions. [VERIFY] current SDK names.)
+ - Settings: Default HEIC in Display P3 + photoQualityPrioritization =
+   .balanced; "ProRAW" option only when supported and enabled.
+ - Output: AVCapturePhoto -> save original data immediately (fileDataRepresentation)
+   to AssetStore before any processing (achieving "original is untouched").
+ - Quality Warning: iPhone pre-applies Smart HDR/Deep Fusion/Photonic Engine and tone
+   mapping; therefore look operates over an "already processed" image. To obtain the
+   purest possible base, we provide ProRAW option, and A/B test between HEIC and ProRAW before
+   fixing profile parameters, because parameters are tuned on a baseline.
+ - Every capture processed in a bounded queue and executed off main actor.
+
+2.9 Live Preview
+----------------
+ - AVCaptureVideoDataOutput (BGRA) at limited preview resolution (e.g. up to ~1080p, [measured]).
+   (This is stream for preview only during photo stage; full video later.)
+ - CVMetalTextureCache -> same fused kernel + same generated LUT (33^3) ->
+   MTKView.
+ - Spatial effects in Preview mode: grain at relative size (same look at 100%),
+   clarity/sharpen at half resolution or disabled during motion.
+ - Preview fidelity: Preview image does not pass Apple pipeline (Deep Fusion...), so
+   final image may differ slightly; display actual image result immediately after capture
+   with smooth transition, and document difference in Settings > About the look.
+ - Any recipe change during preview = LUT re-bake (background) + atomic texture
+   swap (no dropped frames).
+
+2.10 Coordinator and Executor: Core Image + Metal
+--------------------------------------------------
+ Proposal: CIContext created with working space = extended linear Display P3 and
+ workingFormat = RGBAh, graph built as CIImage graph:
+   - LUT: CIColorCubeWithColorSpace (fast MVP path, trilinear), or custom Metal Core
+     Image kernel for tetrahedral later.
+   - Custom kernels (grain, clarity, halation) written in Metal Shading Language
+     and loaded as CIKernel (benefiting from automatic tiling in Core Image).
+   - NR/Sharpen: Ready CI filters first (CINoiseReduction, CINoiseReduction, CIUnsharpMask), then
+     custom kernels if needed.
+ Why? For a small team: Core Image provides tiling/memory/colour management out of the box
+ and reduces Metal errors. We retain pure Metal compute option (fused kernel) for
+ live preview and video later when tighter frame control is required.
+ Risk: Core Image reorders operations internally and blends values between passes; hence
+ each stage is tested against CPU reference comparison (Section 2.14).
+ [VERIFY] CIColorCube cubeDimension size limit on target iOS before adopting 65^3.
+
+2.11 Non-Destructive Saving and Export
+----------------------------------------
+ EditSession (JSON Codable):
+   { assetId, originalPath, recipeRef{id,version}, profileVersion,
+     engineVersion, overrides{}, grainSeed, createdAt, history[] }
+ - Original (HEIC or ProRAW DNG) saved unmodified.
+ - Rendered saved as new asset in Photos (PHAssetCreationRequest) or as reversible
+   edit via PHContentEditingOutput + PHAdjustmentData (carrying
+   formatIdentifier/formatVersion and recipe data) [VERIFY]. Proposal: v1 = new asset
+   + sidecar; v2 = PHAdjustmentData to appear as reversible edit in Photos app.
+ - Sidecar beside original: recipe + versions + overrides + input checksum.
+ - EXIF/XMP watermark in output: "Rendered with Bilou Look <profile>@<ver>,
+   recipe <id>@<ver>, engine <ver>" (without Fujifilm claim).
+
+2.12 Determinism
+----------------
+ - grainSeed = hash(assetId, recipeId) (fixed per image) — or "new seed"
+   via UI tap.
+ - Grain defined in units relative to longest side, giving same look in 1080 preview
+   and 12MP/48MP export.
+ - Test tolerance: Define max allowed difference (e.g. in 8-bit units) after
+   measurement on actual devices; no preset assumed number.
+ - Pin engineVersion in every output, never changing behavior of older version (migration).
+
+2.13 Quality and Performance Levels
+------------------------------------
+ +----------+--------------------+--------------------+----------------------+
+ | Level    | LUT grid           | Spatial effects    | Usage                |
+ +----------+--------------------+--------------------+----------------------+
+ | Preview  | 17 during drag /33 | simplified grain,  | Camera and editor    |
+ |          |                    | half-res clarity   |                      |
+ | Review   | 33                 | full, medium res   | Immediately post-cap |
+ | Export   | 65 (or 33+tetra)   | full resolution    | Save / Share         |
+ +----------+--------------------+--------------------+----------------------+
+ - No pre-determined performance numbers: Targets set after measurement on at least two devices
+   (old + modern) using Instruments (Metal System Trace) and MetricKit.
+ - Monitor ProcessInfo.thermalState and reduce level under thermal load.
+ - Large images (48MP): Tile-processed with overlap of larger radius
+   (clarity/sharpen), or relying on Core Image tiling.
+ - Memory: Single rgba16f texture for 48MP ≈ 384MB (48e6 × 8 bytes) — hence
+   no multiple intermediate copies; resource reuse (TexturePool).
+
+2.14 Testing Strategy (with "Oracle" Mediator Design)
+------------------------------------------------------
+ Levels:
+  U1 Unit: Color conversions with known values, monotonic curve, hue rotation,
+     signal convention (Shadow +2 => darker).
+  U2 LUT: parse .cube/.3dl, size, range, NaN, gradients, trilinear/tetra.
+  U3 Oracle: Run original engine.js (MIT) in Node to generate reference LUTs as
+     fixture files, then compare Swift output against them within tolerance. Powerful trick:
+     proves Swift rewrite is faithful to model before our custom tuning. (Tested —
+     Section 3.6 and Appendix A — and works.)
+  U4 CPU↔Metal on fixed vectors.
+  U5 Golden images: 10–15 images (gray ramp, saturated colors, skin, sky, green,
+     highlights, shadows, out-of-gamut) — comparison outputs with ΔE accuracy.
+  U6 Determinism: Same input twice + preview vs export.
+  U7 Performance/thermal/memory on real device.
+  U8 Distinctness: Chrome ≠ Negative via ΔE measurement (see 4.8).
+  U9 Recipe schema: Unknown values remain null; no cross-recipe leakage.
+
+2.15 Project Structure for Photo Stage (Abbreviated from 7.1 in Blueprint)
+--------------------------------------------------------------------------
+ BilouCamera/
+   App/                     (AppCoordinator, composition root)
+   Packages/
+     BilouColorScience/ BilouLUT/ BilouFilmSim/ BilouRecipe/
+     BilouRender/ BilouCapture/ BilouMedia/ BilouPersistence/
+   Resources/
+     Profiles/
+       bilou.chrome.v1/    profile.json  look-model.json  manifest.json
+       bilou.recipes/      (8 JSON files)
+     References/           (DEV ONLY — outside final bundle: reference LUTs)
+   Tools/                   lut-inspect, oracle-dump, golden-gen, closeness
+   Tests/                   (per 2.14)
+   Docs/                    THIRD_PARTY_NOTICES.md, ASSET_PROVENANCE.md, ADRs
+ Warning: References folder excluded from app target (build setting), CI verifies
+ no undocumented .3dl/.cube enters the bundle.
+
+
+================================================================================
+3. Classic Chrome Architecture — Step-by-Step from Repositories
+================================================================================
+
+3.1 Three Possible Paths — And My Decision
+-------------------------------------------
+ +-------+--------------------------------+-------------+--------------------+
+ | Path  | Idea                           | Status      | My Opinion         |
+ +-------+--------------------------------+-------------+--------------------+
+ | A     | Generate custom LUT from       | Clear MIT   | **Base (Recommended)**|
+ |       | parametric model in Recipe     |             |                    |
+ |       | Converter, then visually tune  |             |                    |
+ +-------+--------------------------------+-------------+--------------------+
+ | B     | Ship Fujilab/Sowerby file      | Unclear     | Prohibited currently. Only|
+ |       | "Classic Chrome.3dl" as-is     | license     | after written permission|
+ +-------+--------------------------------+-------------+--------------------+
+ | C     | Post-calibration on reference  | Depends on  | Phase 2 optional   |
+ |       | images (camera JPEG vs RAW)    | image source| (after first model)|
+ +-------+--------------------------------+-------------+--------------------+
+ Additional principle: Fujilab file remains a "comparison reference" in Tools/ inside developer
+ device only (not in public repo or bundle).
+
+3.2 Parameter Source (from js/data.js in Recipe Converter — Commit a6691ea)
+---------------------------------------------------------------------------
+ id: "classic-chrome"     (defined as "differences from PROVIA/Standard" in Lightroom units)
+   sat (general)    : -16
+   shadow           : +0.035   (positive value = darker shadows in tone curve)
+   high             : +0.008   (positive = brighter highlights)
+   lift             : 0
+   hue   (±100≈±30°): Red +6, Green +8, Aqua -6, Blue -12
+   satB  (per range): Red -8, Yellow -8, Green -22, Aqua -18, Blue -22,
+                      Magenta -15
+   lum   (per range): Red -4, Aqua -8, Blue -12
+   grade (split)    : None
+ 8 color ranges (BAND_HUES) = Red 0°, Orange 30°, Yellow 60°, Green 120°,
+ Aqua 180°, Blue 240°, Purple 270°, Magenta 300°.
+ Original code comment: "These numbers are hand-tuned approximations, not
+ measurements of Fujifilm's proprietary colour science." — We keep this phrase
+ in manifest and display in Inspector.
+
+3.3 Implementation Steps (CC-01 → CC-09)
+-----------------------------------------
+CC-01  Setup and Source Documentation
+   - git clone --depth 1 of repo, record commit and sha256 for data.js, engine.js
+     and LICENSE.
+   - Copy MIT LICENSE text and Sadziu copyright notice to THIRD_PARTY_NOTICES.md.
+   - Exclude vendor/ entirely.
+   - Fill ASSET_PROVENANCE.md: File, source, commit, license, usage
+     (mathematical model rewritten), status (community model).
+CC-02  Dump Model to Our Custom JSON
+   - Resources/Profiles/bilou.chrome.v1/look-model.json  (see 3.7 and App B).
+   - Fields: curve control points, sat, hue[8], satB[8], lum[8], grade,
+     lift, lookSpace, source, confidence = "estimated".
+CC-03  Generate Fixtures from Oracle (Node)
+   - Run harness loading data.js and engine.js inside vm (Appendix A) and write LUT
+     17^3 (and other sizes) and derive() parameters to JSON.
+   - Stored as Tests/Fixtures/oracle/*.json with source commit.
+CC-04  Implement LookTransform in Swift (CPU reference, Double)
+   - Direct translation (parity first) of: monotone cubic curve (Fritsch–Carlson),
+     hue band interpolation (piecewise linear), rotation around neutral axis,
+     sat, lum, split-toning.
+   - Test: Max difference with fixture ≤ 1e-6 (Double) or ≤ 1e-4 (Float).
+CC-05  Implement Metal for Same Function (for bake) + CPU↔Metal
+   - Compute kernel populating 3D MTLTexture.
+   - Test on fixed vectors + edge cases (0,0,0), (1,1,1), gray, saturated.
+CC-06  Visual Tuning Round (Bilou tuning) — v1.1  (see 3.5 and 3.6)
+   - Add Bilou native parameters: per-channel lift, shadow tint, highlight shoulder.
+   - Every change = record in profile CHANGELOG + reason + before/after image.
+CC-07  Look Compiler + Registry
+   - Register "bilou.chrome.v1" in FilmSimulationRegistry, show in picker UI
+     as independent Film Simulation (condition CC-05 in blueprint).
+CC-08  Manifest + provenance + limitations text (3.7).
+CC-09  Acceptance (3.10).
+
+3.4 LookTransform Design (Master Function)
+--------------------------------------------
+ Input : RGB encoded in Look Space (values may slightly exceed [0,1])
+ Output: RGB in Look Space
+
+ Steps (as in engine.js: makeTransform) — in order:
+   1) [WB gains] In source, applied inside function in linear light. With us, not
+      entered in LUT (S3 separate) — first intentional departure from source.
+   2) Tone curve: Monotone cubic curve with 5 points:
+        (0, lift) (0.25, 0.25 - shadow + lift*0.6) (0.5, 0.5)
+        (0.75, 0.75 + high - roll) (1, 1)
+      where shadow = shadowTone × 0.022 + sim.shadow , high = highlightTone ×
+      0.022 + sim.high , roll = DR × 0.022 (see Section 5 for DR).
+      Constraints in source: clamp(0.25 - shadow, 0.06, 0.4), clamp(0.75 + high -
+      roll, 0.6, 0.93).
+   3) For each chromatic pixel (chroma c > 1e-6): h = hue angle (HSV-style)
+        - hue rotation: angle = bandValue(hue,h) × 0.3° (±100 ≈ ±30°)
+          via rotation matrix around axis (1,1,1).
+        - saturation: k = (1 + sat/100) × max(0, 1 + bandValue(satB,h)/100)
+          then rgb = y + (rgb - y) × k
+        - luminance per band: k = 1 + bandValue(lum,h)/100 × 0.9 × min(1, c×1.6)
+      For gray (c≈0): general sat only is applied.
+   4) Split toning: Shadow weight (1-y)^2, highlight weight y^2, global 4y(1-y), intensity
+      sat/100 × 0.22, on tint vector with zero luma.
+   5) clamp [0,1].
+
+ bandValue(): Linear interpolation between 8 band centers (with 360° wrap).
+
+3.5 What We Improve Over Source (Proposed Fixes and Enhancements)
+------------------------------------------------------------------
+ Versioning principle: ‘v1.0’ = parity with open model (for testing); ‘v1.1+’ = Bilou tuning.
+ Both kept retrievable.
+  F1  Luma parameters per look space: Source uses Rec.709 (0.2126, 0.7152,
+      0.0722) because it's sRGB. Our Look Space = Display P3, so we use P3
+      weights (approx 0.2290, 0.6917, 0.0793) derived from matrix, not memory.
+  F2  Move WB outside LUT (before LUT, linear) — matching blueprint recommendation.
+  F3  Extended floating values: No clamp in pipeline middle (source clips near 8-bit);
+      clip once at output (soft gamut mapping).
+  F4  Curve midpoints: 5 points give simple tone; add optional toe/shoulder points
+      (7–9 points) as Bilou native parameters.
+  F5  Black lift + shadow tint (see 3.6) as Bilou native parameters (lift RGB).
+  F6  Highlight shoulder + smooth desaturation near white instead of hard thresholds
+      (Fujilab does something similar at luma > 0.85).
+  F7  LUT interpolation: Trilinear as base; tetrahedral for export.
+  F8  Dither when writing to 8-bit to avoid gradient banding.
+  F9  Experimental "OKLCH" version (v2): Perform band ops on OKLCH instead of HSV for
+      smoother hue transitions. Built as a profile with different version, not replacement.
+  F10 Input normalization: Clarity/NR/Grain never enter LUT (as is currently).
+
+3.6 Gap Analysis — Actual Measured Numbers
+-------------------------------------------
+ Method: Ran engine.js (Recipe Converter) in Node to generate 17^3 LUT for
+ Classic Chrome with neutral settings, and compared it with Fujilab file (Classic Chrome.3dl,
+ 17^3, B fastest) on same grid nodes using ΔE2000 metric (sRGB→Lab, skimage).
+ ΔE2000: ≈1 barely noticeable, 2–3 small difference, 5+ clear difference.
+
+   Look Strength (difference from identity):
+     RC Classic Chrome model    : mean 5.20  median 5.01  p95 9.01  max 12.36
+     Fujilab Classic Chrome     : mean 5.23  median 5.14  p95 7.94  max 12.72
+   Closeness of our model to community reference:
+     RC-CC vs Fujilab-CC        : mean 3.76  median 3.65  p95 7.41  max 9.48
+     (Comparison: without any look vs Fujilab-CC: mean 5.23)
+   => Raw model closes only about 28% of the gap. "Close in direction" but
+      not "very close" yet. This is a sincere preliminary estimate.
+
+   Neutral Axis (R=G=B) — Two clear differences:
+     input 0.00 : RC=(0.000,0.000,0.000)  Fujilab=(0.038,0.042,0.046)
+     input 0.25 : RC=(0.215,0.215,0.215)  Fujilab=(0.259,0.294,0.316)
+     input 0.50 : RC=(0.500,0.500,0.500)  Fujilab=(0.518,0.523,0.526)
+     input 0.75 : RC=(0.758,0.758,0.758)  Fujilab=(0.761,0.758,0.754)
+     input 1.00 : RC=(1.000,1.000,1.000)  Fujilab=(0.999,0.999,0.985)
+   Conclusion: Community reference (1) lifts blacks (matte), (2) tints shadows with
+   blue/cyan bias (B>G>R), (3) leans slightly warm in high highlights. Recipe Converter
+   model for Classic Chrome contains no lift and no split-toning (though its
+   Classic Neg definition has grade: teal shadows hue 185 and warm highlights hue 45).
+
+   Feasibility experiment: Applying gain+offset per channel (6 parameters only) over RC model
+   dropped the mean from 3.76 to 2.25 (p95: 4.20). Meaning adding "black lift + shadow tint"
+   alone bridges much of the gap. This guides F5 tuning above.
+
+ Important Ethical/Legal Warning Regarding These Numbers:
+   - Reference LUT itself is unofficial and unclearly licensed. Using it as internal
+   developer benchmark is less risky than numerically "fitting" our parameters on its
+   data (data fitting), because the latter makes our parameters effectively derived from it.
+   - My recommendation: (1) Use qualitative directions only (higher blacks, cooler shadows,
+   warmer highlights) and tune by eye on our own test images; (2) Do not paste fit numbers in
+   production; (3) If numerical fitting is desired, do so after permission/license or legal counsel;
+   - Cleaner alternative: Calibration (Path C) on images we have rights to use.
+   - The above experiment was run for analysis only and its values are not transferred to files.
+
+3.7 Proposed Manifest for bilou.chrome.v1
+-----------------------------------------
+{
+  "profileId": "bilou.chrome.v1",
+  "displayNameInternal": "Chrome (Bilou)",
+  "version": 1,
+  "kind": "parametric-lookmodel",
+  "lookSpace": { "primaries": "displayP3", "transfer": "sRGB", "range": "full" },
+  "source": {
+    "name": "Fuji Recipe Converter (js/data.js, js/engine.js)",
+    "url": "https://github.com/sadziu/Fuji-Recipe-Converter",
+    "commit": "a6691ea0e880ddd5fd19d7ca2d48a502fb0e7e07",
+    "licence": "MIT (c) 2026 Sadziu and contributors",
+    "reimplemented": true
+  },
+  "provenanceClass": "community-emulation + bilou-tuning",
+  "confidence": "estimated",
+  "statement": "Independent approximation of a film-look. Not an official or identical rendering.",
+  "limitations": [
+    "Hand-tuned estimate; not measured against camera output",
+    "Display-referred; expects Display P3 / sRGB SDR input",
+    "Spatial effects (grain, clarity, sharpening, NR) live outside the LUT",
+    "HDR gain-map input is tone-mapped to SDR in v1"
+  ],
+  "lutBake": { "grid": [17, 33, 65], "interpolation": ["trilinear", "tetrahedral"] },
+  "tuningLog": [ { "version": "1.0", "note": "parity with open model" } ]
+}
+
+3.8 Specific Risks for This File
+--------------------------------
+ - Confusion between "Classic Chrome" as a recipe vs simulation: The 5 recipes use it
+   as base, but it contains none of their settings (Grain/ColorChrome/WB...).
+ - Relying on sRGB encoding colors vs P3 alters interpretation of hue bands;
+   hence eye testing after adopting Look Space is mandatory.
+ - Modern iPhone images are already processed (Photonic Engine); look result changes
+   per device; test on at least two devices.
+
+3.9 No-Dataset Acceptance Path
+------------------------------
+ Technical (matching CC-06 in blueprint):
+   - Successful parse, correct grid and range, no NaN/Inf.
+   - Neutral ramp: no strange colors (except defined shadow tint).
+   - Smooth gradients (limited first derivative), no visible banding.
+   - CPU↔Metal parity within tolerance.
+   - Swift↔Oracle(Node) parity within tolerance.
+   - preview == export (same LUT).
+ Visual (Quality Control):
+   - Set of 12–15 test images (skin, sky, green, saturated blue, orange, red,
+   sunset, indoor, high contrast, haze).
+   - Internal closeness scale (0.5): Mean and p95 ΔE2000 vs community reference (developer
+   only) + blind visual review by two people.
+   - Initial guiding target (not a promise): Reduce mean ΔE00 vs reference from 3.76 to
+   under ~2.5 via qualitative tuning, then re-evaluate.
+ Warning: All these tests prove execution correctness, not identity with Fujifilm.
+
+3.10 Acceptance Criteria for Classic Chrome
+--------------------------------------------
+ [ ] Selected as independent Film Simulation without recipe.
+ [ ] Full manifest + provenance + limitations text visible in Inspector.
+ [ ] Oracle fixtures pass. [ ] CPU↔Metal passes.
+ [ ] preview == export on test images.
+ [ ] No unlicensed asset inside bundle (CI check).
+ [ ] No mentions of "authentic/exact/identical".
+
+
+================================================================================
+4. Classic Negative Architecture — Step-by-Step from Repositories
+================================================================================
+
+4.1 What I Found: Classic Negative Does Not Exist as a Ready File
+------------------------------------------------------------------
+ - Fujilab: No LUT for Classic Negative at all. Closely named files are
+   "Pro Neg Std" and "Pro Neg Hi" which are different Film Simulations (not to be renamed).
+   And recipeParser code handles Classic Negative with fallback to Classic Chrome with
+   warning — meaning it does not actually possess it.
+ - Recipe Converter: Has independent parametric definition for "classic-neg" (field
+   fp: "ClassicNEGA") inside js/data.js, under MIT license.
+ => The only clear path now is Route A (generation from parametric model), matching
+    blueprint recommendation (CN-01..CN-03): "Do not reuse Classic Chrome with
+    saturation change and call it Classic Negative".
+
+4.2 Parameter Source (js/data.js — Commit a6691ea, MIT)
+-------------------------------------------------------
+ id: "classic-neg"
+   sat (general) : -10
+   shadow      : +0.045   (darker shadows than Chrome which has 0.035)
+   high        : +0.020   (brighter highlights than Chrome which has 0.008)
+   lift        : 0
+   hue         : Red +4, Yellow -8, Green +18, Blue -8
+   satB        : Red +6, Yellow -15, Aqua -10, Green -25, Blue -12
+   lum         : Red -8, Green -6, Blue -6
+   grade       : shadowHue 185 (teal), shadowSat 6, highlightHue 45 (warm),
+                 highlightSat 5
+ (Ranges in order: Red, Orange, Yellow, Green, Aqua, Blue, Purple, Magenta)
+   hue  = [ +4,  0,  -8, +18,   0,  -8,  0, 0 ]
+   satB = [ +6,  0, -15, -25, -10, -12,  0, 0 ]
+   lum  = [ -8,  0,   0,  -6,   0,  -6,  0, 0 ]
+
+4.3 Chrome vs Negative Comparison (As Defined by Model)
+-------------------------------------------------------
+ +----------------------+---------------------------+------------------------+
+ | Property             | Classic Chrome            | Classic Neg            |
+ +----------------------+---------------------------+------------------------+
+ | General Sat          | -16 (less saturated)      | -10                    |
+ | Shadows              | 0.035 darker              | 0.045 even darker      |
+ | Highlights           | +0.008                    | +0.020 brighter        |
+ | Green                | hue +8, sat -22           | hue +18, sat -25       |
+ | Blue/Aqua            | sat -22/-18, lum -12/-8   | sat -12/-10, lum -6    |
+ | Red                  | sat -8, lum -4            | sat +6, lum -8         |
+ | Yellow               | sat -8                    | hue -8, sat -15        |
+ | Split Toning         | None                      | Teal shadows + warm hls|
+ +----------------------+---------------------------+------------------------+
+ Differences are structural (range locations, red saturation sign, separate tinting)
+ rather than just "different saturation" — hence satisfying blueprint condition. (Note: Teal/warm
+ tinting at Negative matches a common Fuji community description though unverified officially,
+ and not adopted as fact; it is the open author's estimate.)
+
+4.4 Steps (CN-01 → CN-09)
+-------------------------
+CN-01  Documentation: Same as CC-01 (same repo/commit) + explicit record that Fujilab
+       does not have Classic Negative and fallback is rejected (Issue: "no silent fallback").
+CN-02  Dump look-model.json for bilou.negative.v1 (from 4.2) using same template.
+CN-03  Oracle fixtures: Generate LUT for classic-neg (already tested).
+CN-04  Use same LookTransform programmed in CC-04 (no duplicated code).
+       All difference is data (JSON) — proving design quality: Two base files =
+       two data files over a single engine, no separate shaders.
+CN-05  Distinctness test 4.7.
+CN-06  Visual tuning (v1.1): We have no LUT reference for Negative, so tuned by eye
+       with our test images + (optional) Mini-chart (4.6).
+CN-07  Register in Registry as independent "bilou.negative.v1".
+CN-08  manifest/provenance/limitations (template 3.7 with changed name and grade).
+CN-09  Acceptance (4.9).
+
+4.5 What We Learned from Fujilab on This File (Negative Lessons)
+-----------------------------------------------------------------
+ - Silent fallback = most dangerous flaw (deceives user). Our rule: unsupported sim =>
+   explicit error + message, no substitution.
+ - Do not rename Pro Neg Std/Hi to Classic Neg.
+ - Fujilab README uses phrase "authentic Fujifilm looks"; we avoid it entirely.
+
+4.6 How to Improve Quality Without Ready Reference? (Mini-chart — Proposal)
+----------------------------------------------------------------------------
+ Our problem: No numerical reference for Negative. Small, low-cost solution (aligned with
+ "no large dataset" philosophy): "Mini-chart set":
+   - Standard color chart (ColorChecker 24) + step wedge + one skin scene.
+   - Shot by a Fujifilm camera owner (you or a friend) in RAW+JPEG for both Classic
+     Chrome and Classic Negative under neutral settings (fixed WB, DR100, Grain Off,
+     Color Chrome Off, Highlight/Shadow 0, Sharpness 0, NR 0).
+   - Measure: tone curve on gray, hue/sat shift per patch, shadow/highlight tint.
+   - Tune our model (our own parameters) to approach measurements — this measures behavior
+     of a camera output we own, not copying internal algorithms or third-party files.
+   - Warning: This is what blueprint calls "small validation set"; remains optional,
+     improves confidence but doesn't prove identity. (Short legal review preferred before
+     commercial use.)
+ Difference between sensor generations (X-Trans III/IV/V) is possible; we record camera
+ and generation in manifest.
+
+4.7 Distinctness Test — Actual Measured Numbers
+-----------------------------------------------
+ Metric: ΔE2000 on 17^3 nodes between outputs of the two profiles.
+   RC Classic Chrome vs RC Classic Neg         : mean 2.48 median 2.22
+                                                 p95 4.94  max 7.52
+   (For comparison) Fujilab Classic Chrome vs Fujilab Pro Neg Std :
+                                                 mean 2.76 median 2.54
+                                                 p95 5.16  max 7.31
+   Classic Neg strength (vs identity)          : mean 3.61  p95 6.79
+ Proposed automated test (initial values subject to review after tuning):
+   - mean ΔE00(Chrome, Negative) >= 2.0 and p95 >= 4.0 on 17^3 grid.
+   - ΔE00 on green and orange colors (specific nodes) >= 3.
+   - Gray tone difference (0.25 and 0.75) >= specified threshold.
+   - Different fingerprint(lookModel), no ref from Negative to Chrome.
+
+4.8 Specific Validator Rules for This Pair
+------------------------------------------
+ V1  profile.id is unique; unknown sim => error.
+ V2  No "fallback" field in any profile or recipe.
+ V3  Distinctness test 4.7 passes.
+ V4  The 3 Negative recipes (Eddy's, Cuban Neg, Sunglasses View) resolve to
+     bilou.negative.v1 only.
+ V5  Any edit to look-model bumps version and is recorded in tuningLog.
+
+4.9 Acceptance Criteria for Classic Negative
+--------------------------------------------
+ [ ] Independent and selectable without recipe. [ ] Same engine, different data.
+ [ ] Distinctness test passes. [ ] No fallback.
+ [ ] Oracle fixtures + CPU↔Metal + preview==export.
+ [ ] UI mentions independent approximation with no claim of identity.
+
+
+================================================================================
+5. Recipe Engine Architecture on Top of Film Simulation
+================================================================================
+
+5.1 The Idea in One Line
+-------------------------
+ Recipe = JSON file (published settings + provenance) → passes through versioned
+ Mapper → produces Bilou native parameters → composed over base Profile → Look
+ Compiler bakes LUT + spatial effect kernels.
+
+   Recipe JSON ──► Validator ──► Mapper(bilou-map-vN) ──► ResolvedLook
+        │                                                   │
+   (immutable source)         user overrides ──────────────►│
+                                                            ▼
+                         ┌──────────────┬──────────────────┬───────────────┐
+                         │ pre-look     │ LUT params       │ post-look     │
+                         │ (WB, NR,     │ (tone, colour,   │ (clarity,     │
+                         │  exposure)   │  chrome, FXBlue, │  sharpen,     │
+                         │              │  DR)             │  grain...)    │
+                         └──────────────┴──────────────────┴───────────────┘
+
+5.2 Data Model (Codable + JSON)
+---------------------------------
+ Rule: No strings for numbers, no hidden default values, unknown = null.
+ Every published field saved in two forms: raw (as author wrote it) + normalized (explicit type).
+
+ Full Example: ALPINE GOLD (values from project file, supplied by project owner):
+{
+  "id": "alpine-gold", "version": 1,
+  "name": "ALPINE GOLD", "author": "Gomesphoto.jpg",
+  "baseFilmSimulation": "bilou.chrome.v1",
+  "source": {
+    "dynamicRange": { "raw": "DR400", "mode": "dr400", "status": "user-provided" },
+    "grain":        { "raw": "Off", "amount": "off", "size": null, "status": "user-provided" },
+    "colorChrome":  { "raw": "Strong", "value": "strong", "status": "user-provided" },
+    "colorChromeFxBlue": { "raw": "Weak", "value": "weak", "status": "user-provided" },
+    "whiteBalance": { "raw": "Auto", "mode": "auto", "kelvin": null,
+                      "shiftRed": 5, "shiftBlue": -6, "status": "user-provided" },
+    "highlightTone": { "raw": "-2", "value": -2, "status": "user-provided" },
+    "shadowTone":    { "raw": "-2", "value": -2, "status": "user-provided" },
+    "color":         { "raw": "+3", "value": 3, "status": "user-provided" },
+    "sharpness":     { "raw": "+1", "value": 1, "status": "user-provided" },
+    "noiseReduction":{ "raw": "-2", "value": -2, "status": "user-provided" },
+    "clarity":       { "raw": "0",  "value": 0, "status": "user-provided" },
+    "smoothSkin": null
+  },
+  "captureGuidance": { "exposureCompensation": null, "iso": null },
+  "notes": [ "Reported useful in high-contrast light (source note)" ],
+  "provenance": { "sourceType": "user-provided", "confidence": "unverified",
+                  "sourceNote": "supplied by project owner", "accessed": "2026-10" }
+}
+
+ Unknown Values Example: VIBRANT ARIZONA (Ritchie Roesch)
+   source.dynamicRange = { raw:"DR-P Strong", mode:"drp-strong", ... }
+   source.highlightTone = null   ,  source.shadowTone = null
+   source.whiteBalance  = { mode:"kelvin", kelvin:4350, shiftRed:6,
+                            shiftBlue:-8 }
+   captureGuidance = { iso:"Auto up to 6400", exposureCompensation:"+2/3..+1 1/3" }
+
+ Eight Recipes Table (as provided in file; "?" = not provided => null):
+ +----+---------------+-----+-------+---------+-------+---------+--------------+
+ | Sim| Recipe        | DR  | Grain | CC /    | WB    | H/S/Col | Notes        |
+ |    |               |     |       | FXBlue  | shift |         |              |
+ +----+---------------+-----+-------+---------+-------+---------+--------------+
+ | CC | Alpine Gold   |DR400| Off   | Str/Weak| Auto  | -2/-2/+3| Sharp+1 NR-2 |
+ |    |               |     |       |         |R+5 B-6|         | Clarity 0    |
+ | CC | Daily Aesth.  |DR400| Off   | Weak/Off| Shade | -2/-2/-2| Sharp-2 NR-4 |
+ |    |               |     |       |         |R0 B-1 |         | Clar-1; EC & |
+ |    |               |     |       |         |       |         | ISO guidance |
+ | CC | Vibrant Ariz. |DR-P | Weak/ | Off/Weak| 4350K | ?/?/+4  | Sharp-2 NR-4 |
+ |    |               |Str. | Small |         |R+6 B-8|         | Clar-3 ; H/S |
+ |    |               |     |       |         |       |         | unprovided   |
+ | CC | Solis         |DR400| Weak/ | Str/Str | Auto  | -2/-1/+4| Sharp0 NR-4  |
+ |    |               |     | Large |         |R+5 B-6|         | Clar0 Smooth |
+ |    |               |     |       |         |       |         | Skin Off     |
+ | CC | Vintage Postc.|DR400| Weak/ | Off/Off | Auto  | -1/-1/-1| Sharp-2 NR-1 |
+ |    |               |     | Small |         |R+5 B-8|         | Clar-3 EC 0  |
+ | CN | Eddy's P&S    | ?   |Strong/| Off/Weak| Auto  | +1/0/+3 | Sharp,NR,    |
+ |    |               |     | Large |         |R+4 B-4|         | Clarity ?    |
+ | CN | Cuban Neg     |DR400|Strong/| Str/Str | Auto  | -2/+1/+4| NR-4 Clar-4  |
+ |    |               |     | Large |         |R+4 B-5|         | Sharp ?      |
+ | CN | Sunglasses V. |DR400| Off   | Str/Str | Auto  | -2/0/+3 | Sharp,NR,    |
+ |    |               |     |       |         |R+2 B-4|         | Clarity ?    |
+ +----+---------------+-----+-------+---------+-------+---------+--------------+
+ Special constraints from file: Do not mix Eddy's with sunset community version; do not
+ assume Sharpness 0 nor sRGB in Cuban Neg; DR-P is not a substitute for DR400; SUMMER NADE
+ excluded entirely.
+
+5.3 Mapper Layer (bilou-map-v1) — Published Setting → Bilou Parameter
+---------------------------------------------------------------------
+ Principle: Each row: Source field → stage → formula → status (implemented/approximate/
+ capture-only/unsupported). Constant values below taken from Recipe Converter model (MIT)
+ as v1 base, noting where Fujilab differs, as difference proves these constants
+ are estimates that must be tuned.
+
+ +----------------+-------+---------------------------------------+-----------+
+ | Setting        | Stage | Base Formula (v1)                     | Status    |
+ +----------------+-------+---------------------------------------+-----------+
+ | Film Sim       | S6    | Selects profile (chrome / negative)   | exact id  |
+ | Dynamic Range  | S6    | roll = n×0.022 (DR200:n=1, DR400:n=2) | approx.   |
+ |                |       | Lowers point 0.75 of curve.           | (emulation)|
+ |                |       | (Fujilab: DR400 = +0.6EV exposure and |           |
+ |                |       |  -30 highlights — contrary; tested)   |           |
+ | DR-P Strong    | S6    | Independent drp param (shoulder +     | experimental|
+ |                |       | light shadow lift) — not DR400/alias. | Bilou-own |
+ | Highlight Tone | S6    | high += H×0.022 (+ = brighter)        | approx.   |
+ | Shadow Tone    | S6    | shadow += S×0.022 (+ = darker)        | approx.   |
+ |                |       | (Fujilab: +/- inverted from Fuji —    |           |
+ |                |       |  do not copy)                         |           |
+ | Color          | S6    | sat += C×6 (Fujilab: C×7.5)           | approx.   |
+ | Color Chrome   | S6    | lum per range += n×[-6,-5,-4,-6,0,0,-4,| approx.   |
+ | Effect         |       | -6] (R,O,Y,G,Aq,B,P,M), n: off0 weak1 |           |
+ |                |       | strong2 (v1.1 alt: OKLCH, 5.5)        |           |
+ | CC FX Blue     | S6    | lum += n×[0,0,0,0,-5,-10,-5,0]        | approx.   |
+ | WB shift R/B   | S3    | gR=2^(0.035R), gB=2^(0.035B), normalized| approx.   |
+ |                |       | by sum of luma weights; linear pre-LUT|           |
+ | WB mode/Kelvin | S3 or | RAW: absolute temp/tint (as-shot      | RAW only  |
+ | (Shade,4350K)  | cap   | known). HEIC/JPEG: ignored with warn, |           |
+ |                |       | shift applied only. Or activated at   | capture   |
+ |                |       | capture via Capture Assist (5.9).     | assist    |
+ | Grain amount   | S10   | Off0 / Weak18 / Strong35 (RC units)   | approx.   |
+ | Grain size     | S10   | Small20 / Large45 (relative to side)  | approx.   |
+ | Sharpness      | S8    | clamp(40+8s,0,150) Lr units → convert | approx.   |
+ |                |       | to resolution-independent amount/radius|          |
+ | Noise Reduction| S4    | (n+4)×4 → luma/chroma NR strength     | approx.   |
+ | Clarity        | S7    | c×7 (Lr units); negative = soft/bloom | approx.   |
+ | Smooth Skin    | —     | Requires face/skin segmentation       | unsupported|
+ | Exposure Comp. | —     | capture guidance; not post by default | capture   |
+ | ISO guidance   | —     | capture guidance                      | capture   |
+ +----------------+-------+---------------------------------------+-----------+
+ Rule: Capture-only items are not applied as processing parameters; shown in UI as
+ guidance only (or executed at capture via Capture Assist). Every "approx." shown
+ in Inspector as "Bilou approximation".
+
+5.4 Resolver: From Recipe to ResolvedLook
+------------------------------------------
+ effective = Mapper(source) ⊕ profileDefaults ⊕ userOverrides
+ - userOverrides never modify source values (separate layer).
+ - reset-to-source: drops overrides. reset-to-default: returns to profile defaults.
+ - ResolvedLook = { profileRef, preLook{exposure,wb,nr}, lookParams{tone,
+   colour,chrome,fxBlue,dr}, postLook{clarity,sharpen,grain,...}, warnings[] }
+ - Warning examples: "WB preset ignored for non-RAW", "DR-P approximated",
+   "Smooth Skin unsupported", "Value not provided".
+ - Recipe switching creates a new ResolvedLook from scratch (no leakage).
+
+5.5 Effect Modules
+------------------
+ Unified interface:
+   protocol RecipeEffect {
+     static var id: String { get }
+     var stage: RenderStage { get }            // S3, S4, S6 ...
+     var inputDomain: ColorDomain { get }
+     var isNeutral: Bool { get }               // disabled = no effect
+     func cpuReference(_ px: SIMD3<Double>, ctx: EffectContext) -> SIMD3<Double>
+     func makeKernel(ctx: RenderContext) -> RenderKernel?
+   }
+ Per effect: parameter range, neutral behavior, Preview/Export quality, CPU reference,
+ performance budget, relation to other stages (blueprint Phase 7 requirement).
+
+ Proposed details:
+ (1) WhiteBalanceEffect (S3): Linear multiplication by gains (before LUT). Note: R+5
+     is not "5 RGB units"; relative shift converted via formula above and termed approx.
+ (2) ExposureEffect (S2): Linear 2^EV. Optional (post); not driven by guidance.
+ (3) Highlight/Shadow/DR: Inside LUT curve (S6) — monotone curve; ensures max value
+     additions don't invert curve (clamp constraints like source).
+ (4) Color: Saturation around neutral axis weighted by luma (reduces contamination in
+     high highlights).
+ (5) ColorChrome (S6): v1 = lum per range (RC). v1.1 proposed "OKLCH": lower luma
+     proportionally to chroma C within smooth hue window: ΔL = -k × smoothstep(C)
+     × w(h). Acts as "depth on saturated colors" rather than global saturation. (Blueprint
+     description: selective-color operation, not global saturation.)
+ (6) FXBlue (S6): Hue window around blue (cosine window width ~±55° around 235–250°
+     as Fujilab does conceptually) with smooth roll-off; no hard thresholds. Note: Effect may
+     vary across sensor generations (project file).
+ (7) GrainEffect (S10): Multi-octave noise weighted by luma (stronger in shadows/mids),
+     fixed seed, side-length scale, no gl_FragCoord. Monochrome grain as initial assumption.
+ (8) ClarityEffect (S7): Large-radius high-pass on luma × midtone mask; negative = blend
+     with blurred version (approximates but does not optically match ProMist filter —
+     as project file states).
+ (9) SharpeningEffect (S8): Unsharp on luma; radius tied to output resolution.
+ (10) NoiseReductionEffect (S4): Light luma/chroma NR; photos only in v1.
+ (11) Halation/Bloom/Vignette (S9): Outside the 8 recipes (not mentioned in them);
+      deferred and disabled by default.
+
+5.6 Linking Recipe to Look Compiler
+-----------------------------------
+ - lookParams passed to Look Compiler with base profile to build single LUT.
+ - Slider edit = change paramsHash = re-bake (background) + atomic swap.
+ - Fixed lines (S3, S4, S7–S10) do not trigger re-bake.
+
+5.7 UI and Provenance
+---------------------
+ - Recipe Inspector: Displays raw source value + badge (Published / Estimated /
+   Not provided / Unsupported) + author name + source link.
+ - Button for "View settings as published by author" vs "How Bilou executed it".
+ - Unknowns show "Not provided" in dimmed text, never showing a default number.
+
+5.8 Validator Rules and Recipe Tests
+-------------------------------------
+ R1 baseFilmSimulation exists in Registry.
+ R2 Every published field has status/provenance. R3 Unknown values are null.
+ R4 Capture-only does not turn into processing parameter.
+ R5 Eight files load; 5 Chrome + 3 Negative.
+ R6 Recipe switching does not leak (sequential test A→B→A yields same ResolvedLook).
+ R7 Overrides do not modify source.
+ R8 Mapper is deterministic: same input + same version = same parameters (snapshot tests).
+ R9 Every "approx." supported field carries mappingVersion.
+ R10 No sim or recipe has fallback value.
+
+5.9 Capture Assist (Later Proposal — Exploiting True Camera Nature)
+-------------------------------------------------------------------
+ Many recipe settings are capture settings, and a camera app can actually execute them:
+   - WB preset/Kelvin ← AVCaptureDevice.setWhiteBalanceModeLocked(with:) with
+     gains converted from temperature/tint (deviceWhiteBalanceGains(for:)).
+   - Exposure Compensation ← setExposureTargetBias(_:completionHandler:).
+   - ISO guidance ← custom mode setExposureModeCustom(duration:iso:) or suggestion range
+     in UI. [VERIFY] Names and constraints on physical device.
+ Benefit: Shade (Daily Aesthetic) and 4350K (Vibrant Arizona) operate honestly as
+ capture settings, and post-processing remains relative only. Shown as explicit option
+ "Apply capture guidance" rather than forced.
+
+5.10 Recipe Import (Optional, Later)
+------------------------------------
+ fuji-recipes library (MIT) reads MakerNotes from real Fujifilm images (FilmMode,
+ grain, Color Chrome, FX Blue, WB, shifts, DR, highlight/shadow, color,
+ sharpness, NR, clarity). Parser can be rewritten in Swift (ImageIO +
+ reading MakerNotes) or use ExifTool offline on Mac to generate JSON.
+ Result classified as provenance = "imported-from-exif" and passes same Validator.
+ Does not replace base Film Simulation nor infer missing values.
+
+
+================================================================================
+6. Suggestions, Tips, and Fixes
+================================================================================
+
+6.A Licensing and Legal (Highest Priority)
+------------------------------------------
+ A1. Fujilab unlicensed => do not copy code or ship LUTs. Open polite issue
+     with author asking for license (and explicit permission if using something). Also
+     contact Stuart Sowerby regarding LUT pack usage terms.
+ A2. MIT for Recipe Converter requires keeping copyright notice and license text when
+     copying/deriving core parts: Put them in THIRD_PARTY_NOTICES.md and "Acknowledgements"
+     screen inside app.
+ A3. Do not take vendor/ folder (Tesseract, heic-to LGPL-3.0...) or icons.
+ A4. Fujifilm names and Classic Chrome/Classic Negative: Use neutral names in
+     final UI (0.4) with "inspired by" phrase, consult lawyer before public release.
+ A5. Recipe authors: Real author name + source link. Check: Project file writes
+     ALPINE GOLD author as "Gomesphoto.jpg" (looks like filename, not author) —
+     find correct name before publishing. For recipes published on sites (like Fuji X
+     Weekly for Vibrant Arizona), review site terms before commercial use, request
+     author consent when possible.
+ A6. Privacy: App runs locally; Camera and Photo Library permissions (add-only if
+     sufficient) with clear usage text. No analytics on user images.
+
+6.B Architecture
+----------------
+ B1. Add Look Compiler (2.7) — makes 8 recipes = data, not shaders.
+ B2. Adopt Oracle tests (2.14/Appendix A) from day one; cheapest guarantee for JS-to-Swift parity.
+ B3. Short ADR for each major decision: Look Space, stage order, CI-vs-Metal,
+     HDR policy, LUT locations.
+ B4. NR before look (S4) and visually compare with after; keep order toggleable.
+ B5. float16 for pipeline, dither at 8-bit; do not try 8-bit end-to-end.
+ B6. Resolution-independent grain with deterministic seed (2.12) — otherwise preview
+     differs from export.
+ B7. Make fused kernel interface independent of Core Image for reuse in video
+     (pure Metal path).
+ B8. Never load LUT without manifest or mismatching lookSpace (explicit failure rule).
+ B9. CI check: Any .3dl/.cube file or reference image in bundle without license record
+     => build failure.
+ B10. Cache generated LUT on disk (Caches/) with hash key; delete when engineVersion changes.
+ B11. Any capture-only value (EC/ISO) stays out of default processing (Capture Assist optional).
+ B12. Measure before optimizing: Instruments (Metal System Trace) on old and modern devices,
+      and MetricKit later.
+
+6.C Visual Quality
+------------------
+ C1. A/B test baseline: HEIC vs ProRAW (heavily pre-processed iPhone images).
+ C2. Tune parameters on test images containing real skin, gradient sky (banding),
+     plant greens, saturated blue, gray chart, highlights, indoor scenes.
+ C3. Tuning discipline: Change one parameter at a time, log (before/after/reason)
+     in tuningLog. Blind review by two people.
+ C4. Do not evaluate on single screen; try iPhone + neutral monitor.
+ C5. Monitor Chrome and Negative are structurally distinct (4.7) during tuning so they
+     don't inadvertently converge.
+ C6. Grain: Test at 100% and device screen size; grain varies between preview
+     and 48MP image if not relative.
+ C7. Avoid "Color Chrome" as global saturation; depth on saturated only.
+
+6.D Fixes and Reviews on Blueprint Document Itself
+--------------------------------------------------
+ FIX-1  Section 10.1: Add that Fujilab is unlicensed (no LICENSE nor license field),
+        LUT file count is 15 not 12, Classic Negative is absent.
+ FIX-2  Section 7.4 (CN-01): Answer to "Is there a Classic Negative LUT?" => No,
+        in Fujilab; recipeParser replaces it with Classic Chrome. Update document.
+ FIX-3  Section 10.5/17: Sowerby link in doc differs from README link in Fujilab;
+        harmonize link after verifying site.
+ FIX-4  Section 6.2: JSON example written with curly quotes (“ ”) failing parse;
+        use straight " " in all production JSON. (Section 6.2 noted illustrative
+        example, but warned to prevent copying.)
+ FIX-5  Section 7.5: Document NR move before look as optional, and linear WB before LUT.
+ FIX-6  Section 7.7 (manifest): Add lookSpace and licenceStatus (known / unknown)
+        and reviewedBy/date fields.
+ FIX-7  Section 9: Add signal conventions (Shadow + = darker, Highlight + = lighter)
+        and core constants (5.3) as Fujilab and Recipe Converter differ.
+ FIX-8  Section 7.1: Add Look Compiler and Tools/oracle-dump package to file tree.
+ FIX-9  Section 5: Note that "capture guidance" can turn into actual capture control
+        (Capture Assist) rather than text only.
+ FIX-10 Section 5.1: Author name "Gomesphoto.jpg" needs correction (A5).
+
+6.E Product and Experience
+--------------------------
+ E1. Onboarding: Short screen explaining "independent approximation" honestly — honesty
+     is a competitive advantage, not weakness.
+ E2. Compact Before/After via long press, "Original + Rendered" option.
+ E3. Look intensity slider as transition between original and LUT (principle in
+     Fujilab: mix(color, graded, intensity)) — easy and useful.
+ E4. Multi-language UI (AR/FR/EN) from week one (RTL), provenance strings
+     inside Localizable.strings.
+ E5. Accessibility (VoiceOver, Dynamic Type) in Definition of Done.
+ E6. Thermal monitoring: When hot, reduce preview automatically with subtle notice.
+ E7. Do not promise "Fujifilm look" in store page; "film-inspired colour recipes" safer.
+
+6.F Teamwork
+------------
+ F1. 3 developers split: (1) Color/Render (Metal, LUT, kernels), (2) Capture/Media
+     (AVFoundation, ImageIO, PhotoKit, persistence), (3) Recipe/UI/Tools
+     (Swift, SwiftUI, Validator, CI). Cross-reviews on ColorScience.
+ F2. CI: Build + package tests on macOS runner + license check + snapshot/
+     golden; automatic TestFlight for release branch.
+ F3. Effect Definition of Done: Range + neutral + CPU ref + kernel + test +
+     provenance + logged performance budget.
+ F4. Document every implementation issue in Docs/KNOWN_LIMITATIONS.md.
+
+
+================================================================================
+7. Photo Roadmap (3 developer team; 2–5 workable)
+================================================================================
+ Durations estimated and must be re-estimated after first Sprint; no higher precision claimed.
+
+ +-----+---------------------------+--------------------------------+---------+
+ |Phase| Goal                      | Deliverables                   | Duration|
+ +-----+---------------------------+--------------------------------+---------+
+ | P0  | Audit and Setup           | THIRD_PARTY_NOTICES,           | Week    |
+ |     |                           | ASSET_PROVENANCE, ADRs, CI,    | 1–2     |
+ |     |                           | license requests, repo + empty |         |
+ |     |                           | packages                       |         |
+ | P1  | Color base + LUT          | ColorScience, CubeParser,      | Week    |
+ |     |                           | 3DL parser, CPU sampler,       | 2–4     |
+ |     |                           | oracle-dump (Node)             |         |
+ | P2  | Chrome + Look Compiler    | LookTransform (Swift+Metal),   | Week    |
+ |     |                           | bake LUT, "Viewer" app (image  | 4–6     |
+ |     |                           | import → view)                 |         |
+ | P3  | Negative + Registry       | independent profile,           | Week    |
+ |     |                           | distinctness, tuning round 1,  | 6–8     |
+ |     |                           | provenance cards               |         |
+ | P4  | Recipe Engine             | models, validator, mapper v1,  | Week    |
+ |     |                           | 8 JSON, resolver, Inspector    | 8–10    |
+ | P5  | Effects                   | WB, CC/FXBlue, grain, clarity, | Week    |
+ |     |                           | sharpen, NR + tests            | 9–13    |
+ | P6  | Camera and Photos         | AVFoundation, live preview,    | Week    |
+ |     |                           | final render, export, sessions | 11–15   |
+ | P7  | RAW/ProRAW + Capture Ass. | Apple RAW path, PhotoKit       | Week    |
+ |     |                           | adjustment data (optional)     | 14–17   |
+ | P8  | Polish + Perf + Beta      | UI, accessibility, localization| Week    |
+ |     |                           | thermal, TestFlight            | 16–20   |
+ | P9  | Launch readiness          | Legal/licence review,          | Week    |
+ |     |                           | App Store                      | 20–22   |
+ +-----+---------------------------+--------------------------------+---------+
+ Estimated total for photos only: ≈ 20–22 weeks for 3 developers (overlapping).
+
+ Demo milestones:
+   W6  : Viewer applies Chrome to real image (preview==export).
+   W10 : 8 recipes on still images with Inspector.
+   W15 : Alpha camera: capture + live preview + export.
+   W20 : Beta on TestFlight.
+
+ Tools per phase (abbreviated):
+   P1: Swift, XCTest, Node (oracle), Python (internal ΔE measurement)
+   P2: Metal compute, CVMetalTextureCache, MTKView
+   P5: Metal Core Image kernels, CIFilter
+   P6: AVCapturePhotoOutput, ImageIO, PhotoKit
+   P8: Instruments, MetricKit, ProcessInfo.thermalState
+
+ Technical alternatives:
+   LUT: CIColorCube (fast) ↔ Metal 3D texture + tetrahedral (quality)
+   Processing: Core Image first ↔ Pure Metal (for preview and video)
+   RAW: CIRAWFilter (Apple) ↔ LibRaw (reference/non-standard DNG — requires license/platform review)
+   Saving: file+sidecar ↔ PHAdjustmentData (reversible edit in Photos)
+   Model tuning: Eye only ↔ Mini-chart (4.6) ↔ broader calibration (post-v1)
+
+ Photo-specific risks:
+   - Variation of processed iPhone image looks across devices/versions.
+   - Sky banding after sharp curve (dither + 33/65 grid).
+   - Color mismatch between Display P3 and sRGB on export.
+   - Memory pressure at 48MP (tiling).
+   - Reference LUT license delays (does not affect Route A).
+
+
+================================================================================
+8. What Changes When Video is Added (Later)
+================================================================================
+ Reused as-is: ColorScience, LUT, FilmSim profiles, Recipe Engine,
+ Look Compiler (same baked LUT), semantic parameter logic.
+
+ New in video:
+   - Input transforms: Rec.709 SDR, Apple Log (supported version interfaces), HLG
+     later; no LUT directly on Apple Log.
+   - AVCaptureVideoDataOutput + AVAssetWriter, bounded queues, CVPixelBuffer
+     reuse, intentional frame dropping.
+   - Temporal grain: function (x,y,frameIndex,seed) with slow/controlled evolution
+     instead of random noise per frame.
+   - Temporal NR (not spatial only) or disable in v1 for video.
+   - Correct color metadata (primaries/transfer/matrix/range) on write.
+   - Thermal tests, long recording, audio sync.
+
+ What we do now to open door for video:
+   - Fused color kernel with pure Metal interface (CI-independent).
+   - Define grain as expandable function with frameIndex (remains 0 for photos).
+   - Put no color conversion logic inside UI/Capture.
+   - Record lookSpace and input contract in every profile (useful for Log later).
+
+
+================================================================================
+9. Open Decisions + First 12 Tasks for Execution
+================================================================================
+
+9.1 Decisions Needed Before Starting (With My Recommendation)
+--------------------------------------------------------------
+ D1. Look Space: Display P3 (recommended) vs sRGB? -> P3 (Section 2.5).
+ D2. Legal LUT path: (a) Route A only without any reference LUT in product
+     (recommended), (b) Request Fujilab/Sowerby permission too.
+ D3. UI Names: Neutral (Chrome/Negative Bilou) vs Fujifilm names? -> Neutral.
+ D4. Min iOS version: Determined by ProRAW/Core Image interfaces/target devices.
+     [VERIFY] before adopting (affects RAW and HDR).
+ D5. RAW/ProRAW inside v1 or v1.5? -> v1.5 (after stable HEIC/JPEG).
+ D6. Core Image as coordinator (recommended for small team) or pure Metal from start?
+ D7. Mini-chart set (4.6): Is a Fujifilm camera available to shoot chart?
+ D8. Pricing/Publishing model (free, paid, subscription) — affects rights review.
+
+9.2 First 12 Tasks (First Two Weeks Approx.)
+----------------------------------------------
+  1. Create repository (monorepo) and empty Swift packages + CI running tests.
+  2. Write THIRD_PARTY_NOTICES.md and ASSET_PROVENANCE.md (templates + initial entries:
+     Recipe Converter @a6691ea MIT; fuji-recipes @d46d60e MIT; Fujilab unlicensed; Sowerby uncertain).
+  3. Send license requests (Fujilab, Sowerby) — do not block on reply.
+  4. ADR-001 (Look Space), ADR-002 (Stage Order), ADR-003 (CI vs Metal).
+  5. Move oracle-dump (Appendix A) to Tools/ and generate fixtures for Chrome/Negative.
+  6. Implement ColorSpaceDescriptor + TransferFunction + P3↔sRGB matrices + tests.
+  7. Implement CubeParser and ThreeDLParser (rejecting malformed files) + LUTManifest.
+  8. Implement MonotoneCurve + LookTransform (Swift, Double) + test against fixtures.
+  9. Look Compiler (CPU bake) + CPUSampler (trilinear) + gradient tests.
+ 10. Implement small Viewer app: Select image → convert to Look Space → LUT → view/export.
+ 11. lut-inspect tool (CLI): reads .3dl/.cube header, prints size/range/sha256,
+     checks NaN/monotonicity (used on developer references only).
+ 12. Test image set (12–15) and document sources and rights.
+
+9.3 Definition of Done for Version 1 (Photos)
+---------------------------------------------
+ - Two independent base profiles selectable without recipe, with provenance card.
+ - Eight recipes preserving every value and keeping unknowns unknown.
+ - HEIC/JPEG capture + live preview + P3/sRGB export + sidecar.
+ - No unlicensed asset in final package; honesty texts visible.
+ - Tests: oracle, CPU↔Metal, preview==export, distinctness, schema.
+
+
+================================================================================
+Appendix A: Inspection Scripts and Commands Used (Replayable)
+================================================================================
+
+A.1 Cloning and Version Registration
+------------------------------------
+ git clone --depth 1 https://github.com/MatthewGreenberg/fujilab.git
+ git clone --depth 1 https://github.com/sadziu/Fuji-Recipe-Converter.git
+ git clone --depth 1 https://github.com/thecuvii/fuji-recipes.git
+ for d in fujilab Fuji-Recipe-Converter fuji-recipes; do
+   (cd $d && echo $d && git rev-parse HEAD && ls | grep -i licen); done
+ # Result (2026-10-31):
+ #   fujilab               cd295b04768eb363f83786578e0baa33c7c9903e  (No LICENSE)
+ #   Fuji-Recipe-Converter a6691ea0e880ddd5fd19d7ca2d48a502fb0e7e07  (LICENSE=MIT)
+ #   fuji-recipes          d46d60ee188d443f1efcce0c0022bf64f6f4243d  (MIT in README)
+
+A.2 Inspecting Reference LUT (Developer Only)
+-----------------------------------------------
+ f="public/luts/Fuji XTrans III - Classic Chrome.3dl"
+ head -c 600 "$f" | head -8      # Header + shaper line
+ wc -l "$f"                       # 4915 = comment + shaper + 17^3
+ sha256sum "$f"                   # a9f54ff5e2d9bd64d84bf7e5249f248122bc49bcae740afe69a2d34bb92f8c77
+ # Entry order in Fujilab: R outer, G middle, B fastest (B-fastest)
+ # 12-bit values (up to 4095) => divide by 4095 upon conversion
+
+A.3 Oracle Harness (Node) — Runs Original engine.js (MIT) and Writes LUT
+------------------------------------------------------------------------
+ // dump_luts.js
+ const vm = require('vm'), fs = require('fs');
+ const base = '<path>/Fuji-Recipe-Converter/js/';
+ const ctx = { console, Math, window: {} };
+ ctx.window = ctx; vm.createContext(ctx);
+ for (const f of ['data.js', 'engine.js'])
+   vm.runInContext(fs.readFileSync(base + f, 'utf8'), ctx, { filename: f });
+ const FR = ctx.FR, N = 17;
+ const bake = (recipe) =>
+   Array.from(FR.buildLut(FR.derive(recipe, { drInCurve: true }), N)); // R fastest
+ const cc = Object.assign({}, FR.DEFAULT_RECIPE, { filmSim: 'classic-chrome' });
+ const cn = Object.assign({}, FR.DEFAULT_RECIPE, { filmSim: 'classic-neg' });
+ fs.writeFileSync('rc_luts_17.json', JSON.stringify({ N, cc: bake(cc), cn: bake(cn) }));
+ // Note: File relies on window.FR global variable, so run inside vm with synthetic context.
+
+A.4 Closeness and Distinctness Metric (Python — Developer Only)
+--------------------------------------------------------------
+ import json, numpy as np
+ from skimage.color import rgb2lab, deltaE_ciede2000
+ N = 17
+ def rc_grid(a):   # R fastest -> grid[r][g][b]
+     return np.transpose(np.array(a).reshape(N,N,N,3), (2,1,0,3))
+ def load_3dl(p, depth=4095.0):   # B fastest -> grid[r][g][b]
+     rows = [[float(x) for x in l.split()] for l in open(p)
+             if l.strip() and not l.startswith('#') and len(l.split()) == 3]
+     return (np.array(rows)/depth).reshape(N,N,N,3)
+ def de(a, b):
+     la = rgb2lab(np.clip(a,0,1).reshape(-1,1,3))
+     lb = rgb2lab(np.clip(b,0,1).reshape(-1,1,3))
+     return deltaE_ciede2000(la, lb).ravel()
+ # mean / median / p95 / max recorded in tuning report (developer only)
+ # Warning: Results are internal metrics, not presented as Fujifilm match percentage.
+
+
+================================================================================
+Appendix B: Transferred Parameter Tables from Sources
+================================================================================
+
+B.1 Eight Color Ranges (data.js)
+----------------------------------
+ Index: 0 Red 0° | 1 Orange 30° | 2 Yellow 60° | 3 Green 120° |
+        4 Aqua 180° | 5 Blue 240° | 6 Purple 270° | 7 Magenta 300°
+
+B.2 Chrome and Negative Definitions as in Source (Differences from Provia)
+--------------------------------------------------------------------------
+                 Classic Chrome                Classic Neg.
+ General sat     -16                           -10
+ shadow          0.035                         0.045
+ high            0.008                         0.020
+ lift            0                             0
+ hue[8]          [ +6,  0,  0, +8, -6,-12, 0, 0]  [ +4,  0, -8,+18,  0, -8, 0, 0]
+ satB[8]         [ -8,  0, -8,-22,-18,-22, 0,-15] [ +6,  0,-15,-25,-10,-12, 0, 0]
+ lum[8]          [ -4,  0,  0,  0, -8,-12, 0, 0]  [ -8,  0,  0, -6,  0, -6, 0, 0]
+ grade           —                             [185, 6, 45, 5]
+                                               (shadowHue, shadowSat,
+                                                highlightHue, highlightSat)
+
+ (Exact matrix values verified from looks.json generated by oracle for Chrome; Negative from data.js directly.)
+
+B.3 derive() Constants in Recipe Converter (Mapper v1 Base)
+-----------------------------------------------------------
+ TONE_STEP                = 0.022  (per Highlight/Shadow unit)
+ shadow curve point       = clamp(0.25 - shadow, 0.06, 0.40) + lift×0.6
+ highlight curve point    = clamp(0.75 + high - roll, 0.60, 0.93)
+ roll (DR)                = DRindex × 0.022   (DR100=0, DR200=1, DR400=2)
+ saturation               = sim.sat + Color×6        (clamp ±100)
+ CC lum offsets (×0/1/2)  = [-6,-5,-4,-6, 0, 0,-4,-6]
+ FXBlue lum offsets       = [ 0, 0, 0, 0,-5,-10,-5, 0]
+ WB gains                 = 2^(0.035×R) , 1 , 2^(0.035×B)  then /(0.2126gR+
+                            0.7152+0.0722gB)
+ grain amount             = [0, 18, 35]    size: small20 / large45  roughness 50
+ clarity                  = value × 7
+ sharpness                = clamp(40 + 8×value, 0, 150)
+ noise reduction          = (value + 4) × 4
+ hue rotation             = band × 0.3°   (±100 ≈ ±30°)
+ band luminance           = 1 + band/100 × 0.9 × min(1, chroma×1.6)
+ split-tone strength      = sat/100 × 0.22
+ split weights            = shadow (1-y)^2 , highlight y^2 , global 4y(1-y)+0.35
+
+B.4 Corresponding Fujilab Constants (For Comparison Only — Do Not Copy)
+------------------------------------------------------------------------
+ Highlight ×10 → highlights ; Shadow ×10 → shadows (no sign inversion)
+ Color ×7.5 → saturation ; DR200 → +0.3 exposure & -15 HL ; DR400 → +0.6 & -30
+ Grain: Off0 / Weak25 / Strong50 ; size: Small20 / Large75
+ Color Chrome: Off0 / Weak35 / Strong70
+ WB: temp=(R-B)×4.4 , tint=R×2.2
+
+B.5 Adopted Fujifilm Signal Conventions
+----------------------------------------
+ Highlight Tone: + = brighter highlights, - = darker
+ Shadow Tone   : + = darker shadows, - = brighter   (inverse of Highlight)
+ (Multiple educational sources confirm this direction; established via unit test.)
+
+B.6 Explicit Unknowns from Project File (Kept Null)
+-----------------------------------------------------
+ Alpine Gold : Exposure Comp, ISO, Smooth Skin
+ Daily Aesthetic : Smooth Skin, others
+ Vibrant Arizona : Highlight, Shadow, Smooth Skin
+ Solis : Exposure Comp, ISO
+ Vintage Postcards : ISO
+ Eddy's : DR, Sharpness, NR, Clarity, EC, ISO
+ Cuban Neg : Sharpness, EC, ISO, Smooth Skin, Output colour space
+ Sunglasses View : Sharpness, NR, Clarity, EC, ISO, Smooth Skin
+
+
+================================================================================
+Appendix C: Proposed Swift Structures (Skeletons — Not Final Code)
+================================================================================
+ Note: Names and interfaces are illustrative. Translated from engine.js logic (MIT)
+ with modifications from Section 3.5. Always verify Apple interfaces in target SDK [VERIFY].
+
+C.1 Color Spaces
+----------------
+public struct ColorSpaceDescriptor: Codable, Hashable {
+    public enum Primaries: String, Codable { case sRGB, displayP3, rec709, rec2020, appleLog }
+    public enum Transfer: String, Codable { case linear, sRGB, rec709, hlg, appleLog }
+    public var primaries: Primaries
+    public var transfer: Transfer
+    public var isExtendedRange: Bool
+}
+
+// Bilou Look Space v1 (ADR-001): Display P3 primaries + sRGB transfer
+public extension ColorSpaceDescriptor {
+    static let bilouLookV1 = ColorSpaceDescriptor(primaries: .displayP3,
+                                                  transfer: .sRGB,
+                                                  isExtendedRange: true)
+}
+
+C.2 LookModel — Data Only
+-------------------------
+public struct SplitTone: Codable, Hashable {
+    public var shadowHue = 0.0, shadowSat = 0.0     // degrees, 0...100
+    public var highlightHue = 0.0, highlightSat = 0.0
+    public var globalHue = 0.0, globalSat = 0.0
+}
+
+public struct LookModel: Codable, Hashable {
+    // Red, Orange, Yellow, Green, Aqua, Blue, Purple, Magenta
+    public static let bandHues: [Double] = [0, 30, 60, 120, 180, 240, 270, 300]
+
+    public var curve: [SIMD2<Double>]      // monotone-cubic control points (x,y)
+    public var saturation: Double          // -100...100
+    public var hue: [Double]               // 8 bands, +/-100 ~ +/-30 degrees
+    public var satBands: [Double]          // 8 bands
+    public var lumBands: [Double]          // 8 bands
+    public var split: SplitTone
+    public var blackLift: SIMD3<Double>    // Bilou-native (v1.1+), default 0
+    public var lumaWeights: SIMD3<Double>  // derived from the look space matrix
+}
+
+C.3 Monotone Curve (Fritsch–Carlson) — Translation of FR.makeCurve
+-------------------------------------------------------------------
+public struct MonotoneCurve {
+    private let xs: [Double], ys: [Double], m: [Double]
+
+    public init(points: [SIMD2<Double>]) {
+        let xs = points.map { $0.x }, ys = points.map { $0.y }
+        let n = xs.count
+        var d = [Double](repeating: 0, count: n - 1)
+        for i in 0..<(n - 1) { d[i] = (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]) }
+        var m = [Double](repeating: 0, count: n)
+        m[0] = d[0]
+        if n > 2 {
+            for i in 1..<(n - 1) { m[i] = (d[i - 1] * d[i] <= 0) ? 0 : (d[i - 1] + d[i]) / 2 }
+        }
+        m[n - 1] = d[n - 2]
+        for i in 0..<(n - 1) {
+            if d[i] == 0 { m[i] = 0; m[i + 1] = 0; continue }
+            let a = m[i] / d[i], b = m[i + 1] / d[i], s = a * a + b * b
+            if s > 9 { let t = 3 / s.squareRoot(); m[i] = t * a * d[i]; m[i + 1] = t * b * d[i] }
+        }
+        self.xs = xs; self.ys = ys; self.m = m
+    }
+
+    public func value(_ x: Double) -> Double {
+        if x <= xs[0] { return ys[0] }
+        if x >= xs[xs.count - 1] { return ys[ys.count - 1] }
+        var k = 0
+        while x > xs[k + 1] { k += 1 }
+        let h = xs[k + 1] - xs[k], u = (x - xs[k]) / h, u2 = u * u, u3 = u2 * u
+        return (2*u3 - 3*u2 + 1) * ys[k] + (u3 - 2*u2 + u) * h * m[k]
+             + (-2*u3 + 3*u2) * ys[k + 1] + (u3 - u2) * h * m[k + 1]
+    }
+}
+
+C.4 LookTransform (CPU Reference) — The Core
+--------------------------------------------
+public struct LookTransform {
+    let model: LookModel
+    let curve: MonotoneCurve
+    public init(_ model: LookModel) { self.model = model; self.curve = MonotoneCurve(points: model.curve) }
+
+    public func apply(_ rgb: SIMD3<Double>) -> SIMD3<Double> {
+        let w = model.lumaWeights
+        // 1) tone curve per channel (+ optional Bilou black lift)
+        var c = SIMD3(curve.value(rgb.x), curve.value(rgb.y), curve.value(rgb.z))
+        c = c * (SIMD3(repeating: 1) - model.blackLift) + model.blackLift
+
+        // 2) HSL-style band operations
+        var y = (c * w).sum()
+        let mx = max(c.x, max(c.y, c.z)), mn = min(c.x, min(c.y, c.z)), chroma = mx - mn
+        let satK = 1 + model.saturation / 100
+        if chroma > 1e-6 {
+            let h = hueDegrees(c, mx: mx, mn: mn)          // computed once (as in source)
+            let angle = bandValue(model.hue, h) * 0.3 * .pi / 180
+            if angle != 0 { c = rotateAroundGrey(c, angle); y = (c * w).sum() }
+            let k = satK * max(0, 1 + bandValue(model.satBands, h) / 100)
+            c = SIMD3(repeating: y) + (c - SIMD3(repeating: y)) * k
+            let kl = 1 + bandValue(model.lumBands, h) / 100 * 0.9 * min(1, chroma * 1.6)
+            c *= kl
+        } else {
+            c = SIMD3(repeating: y) + (c - SIMD3(repeating: y)) * satK
+        }
+
+        // 3) split toning (zero-luma tint vectors)
+        c = applySplitTone(c, model.split, w)
+        return c            // NO clamp here: gamut handled once, at output (F3)
+    }
+}
+
+func hueDegrees(_ c: SIMD3<Double>, mx: Double, mn: Double) -> Double {
+    let d = mx - mn
+    if d < 1e-9 { return 0 }
+    var h: Double
+    if mx == c.x { h = ((c.y - c.z) / d).truncatingRemainder(dividingBy: 6) }
+    else if mx == c.y { h = (c.z - c.x) / d + 2 }
+    else { h = (c.x - c.y) / d + 4 }
+    h *= 60
+    return h < 0 ? h + 360 : h
+}
+
+func bandValue(_ arr: [Double], _ h: Double) -> Double {
+    let hues = LookModel.bandHues + [360]
+    for i in 0..<8 where h <= hues[i + 1] {
+        let t = (h - hues[i]) / (hues[i + 1] - hues[i])
+        return arr[i] + (arr[(i + 1) % 8] - arr[i]) * t
+    }
+    return arr[0]
+}
+
+func rotateAroundGrey(_ c: SIMD3<Double>, _ v: Double) -> SIMD3<Double> {
+    let cs = cos(v), sn = sin(v), o = (1 - cs) / 3, s3 = (1.0 / 3.0).squareRoot() * sn
+    return SIMD3(c.x * (cs + o) + c.y * (o - s3) + c.z * (o + s3),
+                 c.x * (o + s3) + c.y * (cs + o) + c.z * (o - s3),
+                 c.x * (o - s3) + c.y * (o + s3) + c.z * (cs + o))
+}
+
+C.5 Baking LUT on CPU (For Testing and Reference)
+--------------------------------------------------
+// Output: RGB float triples, RED index varies fastest (same as .cube files).
+public func bakeLUT(_ t: LookTransform, grid n: Int) -> [Float] {
+    var out = [Float](); out.reserveCapacity(n * n * n * 3)
+    let s = 1.0 / Double(n - 1)
+    for b in 0..<n { for g in 0..<n { for r in 0..<n {
+        let o = t.apply(SIMD3(Double(r) * s, Double(g) * s, Double(b) * s))
+        out += [Float(o.x), Float(o.y), Float(o.z)]
+    }}}
+    return out
+}
+
+C.6 Manifest for LUT/Profile
+-----------------------------
+public struct AssetManifest: Codable {
+    public enum Licence: String, Codable { case mit, apache2, cc0, proprietaryPermitted, unknown }
+    public var profileId: String
+    public var version: Int
+    public var lookSpace: ColorSpaceDescriptor
+    public var source: SourceRef                 // name, url, commit
+    public var licence: Licence
+    public var licenceReviewed: Date?
+    public var sha256: String?                   // for file-backed LUTs
+    public var provenanceClass: String           // e.g. "community-emulation+bilou-tuning"
+    public var limitations: [String]
+    public var tuningLog: [TuningEntry]
+}
+// Loader rule: licence == .unknown  =>  never loaded in Release builds.
+
+C.7 Recipe Models
+-----------------
+public enum ValueStatus: String, Codable { case userProvided, verified, inferred, unknown }
+public enum DynamicRange: String, Codable { case dr100, dr200, dr400, drpStrong, drpWeak, drpAuto }
+public enum Strength: String, Codable { case off, weak, strong }
+public enum GrainSize: String, Codable { case small, large }
+
+public struct Published<T: Codable & Hashable>: Codable, Hashable {
+    public var raw: String          // exactly as the author wrote it
+    public var value: T?            // normalized; nil if not safely convertible
+    public var status: ValueStatus
+}
+
+public struct SourceRecipeSettings: Codable {
+    public var dynamicRange: Published<DynamicRange>?
+    public var grainAmount: Published<Strength>?
+    public var grainSize: Published<GrainSize>?
+    public var colorChrome: Published<Strength>?
+    public var colorChromeFxBlue: Published<Strength>?
+    public var whiteBalance: Published<WhiteBalanceSetting>?
+    public var highlightTone: Published<Int>?
+    public var shadowTone: Published<Int>?
+    public var color: Published<Int>?
+    public var sharpness: Published<Int>?
+    public var noiseReduction: Published<Int>?
+    public var clarity: Published<Int>?
+    public var smoothSkin: Published<Strength>?      // unsupported in v1
+}
+// Every optional means: "not provided" => nil. Never substitute a default.
+
+public struct Recipe: Codable, Identifiable {
+    public var id: String; public var version: Int
+    public var name: String; public var author: String
+    public var baseFilmSimulation: String            // "bilou.chrome.v1" | "bilou.negative.v1"
+    public var source: SourceRecipeSettings
+    public var captureGuidance: CaptureGuidance
+    public var provenance: RecipeProvenance
+}
+
+C.8 GPU Baking Kernel (Metal) — Concept
+----------------------------------------
+kernel void bakeLUT(texture3d<half, access::write> lut [[texture(0)]],
+                    constant LookParams &p [[buffer(0)]],
+                    uint3 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= lut.get_width() || gid.y >= lut.get_height() || gid.z >= lut.get_depth()) return;
+    float3 rgb = float3(gid) / float(lut.get_width() - 1);
+    float3 o = lookTransform(rgb, p);          // same math as the CPU reference
+    lut.write(half4(half3(o), 1.0h), gid);
+}
+// Sampling with texel-center alignment:
+//   float scale = (N - 1.0) / N, offset = 0.5 / N;
+//   float3 c = lut.sample(s, rgb * scale + offset).rgb;
+//   (sampler: linear filter, clamp_to_edge)
+
+C.9 Core Image Render Graph (MVP Path)
+--------------------------------------
+let working = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!
+let context = CIContext(mtlCommandQueue: queue, options: [
+    .workingColorSpace: working,
+    .workingFormat: CIFormat.RGBAh
+])
+
+var image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true])!
+// S3: white balance gains in linear light (CIColorMatrix with diagonal gains)
+// S4: light noise reduction
+// S5+S6: look LUT. The cube is defined in the look space; Core Image converts
+//        from the working space into that space before the lookup.
+let cube = CIFilter.colorCubeWithColorSpace()
+cube.inputImage = image
+cube.cubeDimension = Float(n)
+cube.cubeData = lutDataRGBA32F      // RGBA float32 (alpha = 1), RED varies fastest
+cube.colorSpace = CGColorSpace(name: CGColorSpace.displayP3)!   // look space
+image = cube.outputImage!
+// S7..S10: custom CIKernels (clarity, sharpen, grain)
+// Export: context.heifRepresentation / jpegRepresentation with Display P3
+[VERIFY] Max cubeDimension limit, cube data order, and color space conversion
+behavior in target iOS before adopting 65^3 and baked LUT.
+
+
+================================================================================
+Appendix D: Glossary
+================================================================================
+ Film Simulation   : Base look (here Chrome / Negative as independent approximation).
+ Film Recipe       : Recipe = Film Simulation + Settings (published values).
+ Look Space        : Color space where the look is defined and LUT applied.
+ LUT 3D            : Table transforming each color (R,G,B) to a new color.
+ Trilinear/Tetrahedral : Two interpolation methods between LUT nodes.
+ Input/Output Transform : Transforming colors to/from working space.
+ Display-referred  : Values relative to display (SDR) rather than linear scene-light.
+ ΔE2000            : Visual color difference metric (≈1 barely noticeable).
+ Oracle            : Reference implementation (here engine.js) against which we compare.
+ Look Compiler     : Component transforming (profile+recipe) into a cached baked LUT.
+ Provenance        : Record of origin (source, license, confidence, status).
+ Capture-only      : Shooting setting (EC/ISO/WB preset) not applied as post-processing.
+ Capture Assist    : Optional feature actually executing recipe guidance at capture.
+ ProRAW            : Apple's computational RAW format (not standard Bayer DNG).
+ Gain map HDR      : HEIC/JPEG images with gain map for HDR display.
+ Determinism       : Same input + version = same output.
+
+================================================================================
+Final Note
+================================================================================
+ This report relies on actual inspection of 3 repositories on 2026-10-31, and on
+ internal measurements (ΔE2000) conducted on reference LUT for analysis purposes only. All of the above
+ is engineering estimation, not legal advice. The project remains an independent approximation
+ of film looks inspired by published recipes, neither a copy of nor identical to Fujifilm.
+
+ -------------------------------- End of Report --------------------------------
